@@ -319,6 +319,19 @@
       </layout>
      </item>
      <item>
+      <widget class="QLabel" name="labelUserInfo">
+       <property name="text">
+        <string>User: N/A | Role: N/A</string>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignVCenter</set>
+       </property>
+       <property name="styleSheet">
+        <string>padding-left: 10px;</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <spacer name="horizontalSpacerStatus">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Minimum" vsizetype="Minimum">

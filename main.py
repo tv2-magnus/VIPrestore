@@ -12,6 +12,17 @@ from login_dialog import LoginDialog
 
 from concurrent.futures import ThreadPoolExecutor
 
+def load_custom_font():
+    font_id = QtGui.QFontDatabase.addApplicationFont("fonts/Roboto-Regular.ttf")
+    if font_id == -1:
+        print("Failed to load Roboto font!")
+        return None
+    
+    families = QtGui.QFontDatabase.applicationFontFamilies(font_id)
+    if families:
+        return families[0]  # Use the first available font family
+    return None
+
 class ServicesFilterProxy(QtCore.QSortFilterProxyModel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -249,14 +260,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Alternating row colors for service view
         self.tableViewServices.setAlternatingRowColors(True)
-        self.tableViewServices.setStyleSheet("""
-            QTableView {
+        self.setStyleSheet("""
+            QTableView, QTableWidget {
                 background-color: #f5f5f5;
                 alternate-background-color: #e5e5e5;
+                color: black; /* Default text color */
             }
-            QTableView::item:selected {
+            QTableView::item:selected, QTableWidget::item:selected {
                 background-color: #bdc8ff;
-                color: #000000;
+                color: black; /* Selected item text color */
             }
         """)
 
@@ -335,20 +347,39 @@ class MainWindow(QtWidgets.QMainWindow):
                 break
             server_url, username, password = dlg.getCredentials()
             self.client = VideoIPathClient(server_url)
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                try:
-                    self.client.login(username, password)
-                except VideoIPathClientError as e:
-                    QtWidgets.QMessageBox.critical(self, "Login Failed", str(e))
-                    self.client = None
-                    self.updateConnectionStatus(False)
-                    continue
-                insecure_warning = any("SSL verification failed" in str(warning.message) for warning in w)
-                self.client.ssl_verified = not insecure_warning
-            self.updateConnectionStatus(True, getattr(self.client, "ssl_verified", True))
-            self.refreshServicesAsync()  # Use async refresh now.
+            try:
+                self.client.login(username, password)
+
+                # Fetch session info (includes username & roles)
+                session_info = self.client.get("/api/_session")
+                user_data = session_info.get("userCtx", {})
+                username = user_data.get("name", "unknown")
+                roles = user_data.get("roles", [])
+
+                # Combine into a formatted display string
+                roles_str = ", ".join(roles) if roles else "No roles"
+                user_status_text = f"User: {username} | Role(s): {roles_str}"
+
+                # Update the status bar with user info
+                self.updateUserStatus(user_status_text)
+
+                print(f"Logged-in User: {username}")
+                print(f"Roles: {roles_str}")
+
+            except VideoIPathClientError as e:
+                QtWidgets.QMessageBox.critical(self, "Login Failed", str(e))
+                self.client = None
+                self.updateConnectionStatus(False)
+                continue
+
+            self.updateConnectionStatus(True)
+            self.refreshServicesAsync()
             break
+
+    def updateUserStatus(self, text):
+        label_user_info = self.findChild(QtWidgets.QLabel, "labelUserInfo")
+        if label_user_info:
+            label_user_info.setText(text)
 
     def doLogout(self):
         if self.client:
@@ -934,11 +965,19 @@ class GroupDetailDialog(QtWidgets.QDialog):
         add_row("res", json_str)
 
 def main():
-
     app = QtWidgets.QApplication(sys.argv)
+
+    # Load and apply Roboto globally
+    roboto_font = load_custom_font()
+    if roboto_font:
+        font = QtGui.QFont(roboto_font, 10)  # Adjust size as needed
+        app.setFont(font)
+    else:
+        print("Falling back to default system font.")
+
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
