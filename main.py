@@ -1,130 +1,944 @@
 import sys
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QTableView, QLineEdit,
-    QVBoxLayout, QWidget, QMenuBar, QStatusBar,
-    QGroupBox, QLabel, QSplitter, QFrame, QPushButton, QFormLayout, QHBoxLayout
-)
-from PySide6.QtGui import QAction, QIcon
+import re
+import json
+import warnings
+from datetime import datetime
 
+from PyQt6 import QtWidgets, uic, QtGui, QtCore
+from PyQt6.QtGui import QAction
+from PyQt6.QtCore import QModelIndex
+from vipclient import VideoIPathClient, VideoIPathClientError
+from login_dialog import LoginDialog
 
-class MyTableModel(QAbstractTableModel):
-    def __init__(self, data=None, parent=None):
+from concurrent.futures import ThreadPoolExecutor
+
+class ServicesFilterProxy(QtCore.QSortFilterProxyModel):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self._data = data or []
+        self.source_filter = ""
+        self.destination_filter = ""
+        self.start_range = (None, None)
+        self.active_profiles = set()
 
-    def rowCount(self, parent=QModelIndex()):
-        return len(self._data)
+    def setSourceFilterText(self, text):
+        self.source_filter = text.lower()
+        self.invalidateFilter()
 
-    def columnCount(self, parent=QModelIndex()):
-        return len(self._data[0]) if self._data else 0
+    def setDestinationFilterText(self, text):
+        self.destination_filter = text.lower()
+        self.invalidateFilter()
 
-    def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid() or role != Qt.DisplayRole:
-            return None
-        return self._data[index.row()][index.column()]
+    def setStartRange(self, start_dt, end_dt):
+        self.start_range = (start_dt, end_dt)
+        self.invalidateFilter()
 
+    def setActiveProfiles(self, profile_names):
+        self.active_profiles = set(profile_names)
+        self.invalidateFilter()
 
-class MainWindow(QMainWindow):
+    def filterAcceptsRow(self, source_row, source_parent):
+        model = self.sourceModel()
+        idx_source = model.index(source_row, 1, source_parent)  # Source col
+        idx_dest   = model.index(source_row, 2, source_parent)  # Destination col
+        idx_start  = model.index(source_row, 3, source_parent)  # Start col
+        idx_prof   = model.index(source_row, 4, source_parent)  # Profile col
+
+        source_text = (model.data(idx_source) or "").lower()
+        dest_text   = (model.data(idx_dest)   or "").lower()
+        start_text  = (model.data(idx_start)  or "")
+        profile_txt = (model.data(idx_prof)   or "")
+
+        # 1) Source filter
+        if self.source_filter not in source_text:
+            return False
+
+        # 2) Destination filter
+        if self.destination_filter not in dest_text:
+            return False
+
+        # 3) Time range filter
+        if start_text:
+            dt_val = QtCore.QDateTime.fromString(start_text, "yyyy-MM-dd HH:mm:ss")
+            if self.start_range[0] and dt_val < self.start_range[0]:
+                return False
+            if self.start_range[1] and dt_val > self.start_range[1]:
+                return False
+
+        # 4) Profile filter
+        if self.active_profiles and profile_txt not in self.active_profiles:
+            return False
+
+        return True
+
+# Worker signals for asynchronous refresh.
+class WorkerSignals(QtCore.QObject):
+    finished = QtCore.pyqtSignal(dict)
+    error = QtCore.pyqtSignal(str)
+
+class RefreshServicesWorker(QtCore.QRunnable):
+    def __init__(self, client):
+        super().__init__()
+        self.client = client
+        self.signals = WorkerSignals()
+
+    def run(self):
+        try:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_normal = executor.submit(self.client.retrieve_services)
+                future_profiles = executor.submit(
+                    lambda: self.client.get("/rest/v1/data/config/profiles/*/id,name,description,tags/**")
+                )
+                future_ep_local = executor.submit(
+                    lambda: self.client.get("/rest/v1/data/config/network/nGraphElements/**")
+                )
+                future_ep_ext = executor.submit(
+                    lambda: self.client.get("/rest/v1/data/status/network/externalEndpoints/**")
+                )
+                future_group = executor.submit(self.retrieve_group_connections)
+
+                normal_services = future_normal.result()
+
+                profiles_resp = future_profiles.result()
+                prof_data = profiles_resp.get("data", {}).get("config", {}).get("profiles", {})
+                profile_mapping = {pid: info.get("name", pid) for pid, info in prof_data.items()}
+
+                endpoint_map = {}
+                try:
+                    resp_local = future_ep_local.result()
+                    ngraph = resp_local.get("data", {}).get("config", {}).get("network", {}).get("nGraphElements", {})
+                    for node_id, node_data in ngraph.items():
+                        val = node_data.get("value", {})
+                        label = val.get("descriptor", {}).get("label", "")
+                        endpoint_map[node_id] = label if label else node_id
+                except Exception:
+                    pass
+                try:
+                    resp_ext = future_ep_ext.result()
+                    ext_data = resp_ext.get("data", {}).get("status", {}).get("network", {}).get("externalEndpoints", {})
+                    for ext_id, ext_val in ext_data.items():
+                        desc_obj = ext_val.get("descriptor", {})
+                        lbl = desc_obj.get("label") or ""
+                        endpoint_map[ext_id] = lbl if lbl else ext_id
+                except Exception:
+                    pass
+
+                group_services, child_to_group = future_group.result()
+
+            merged = {}
+            merged.update(normal_services)
+            merged.update(group_services)
+            for svc_id, svc_obj in normal_services.items():
+                if svc_id in child_to_group:
+                    svc_obj["groupParent"] = child_to_group[svc_id]
+
+            used_profile_ids = set()
+            for svc_id, svc_data in merged.items():
+                booking = svc_data.get("booking", {})
+                pid = booking.get("profile", "")
+                if pid:
+                    used_profile_ids.add(pid)
+
+            result = {
+                "merged": merged,
+                "used_profile_ids": used_profile_ids,
+                "profile_mapping": profile_mapping,
+                "endpoint_map": endpoint_map,
+                "child_to_group": child_to_group,
+            }
+            self.signals.finished.emit(result)
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
+    def retrieve_group_connections(self):
+        group_services = {}
+        child_to_group = {}
+        try:
+            url = (
+                "/rest/v1/data/status/conman/services/"
+                "*%20where%20type='group'/connection/"
+                "connection.generic,generic/**/.../.../connection.to,from,to,id,rev,specific/"
+                "specific.breakAway,breakAway,complete,missingActiveConnections,numChildren,children/*"
+            )
+            resp = self.client.get(url)
+            conman = resp.get("data", {}).get("status", {}).get("conman", {})
+            raw_services = conman.get("services", {})
+
+            for svc_key, svc_data in raw_services.items():
+                connection = svc_data.get("connection", {})
+                group_id = connection.get("id", svc_key)
+                gen = connection.get("generic", {})
+                spec = connection.get("specific", {})
+                desc = gen.get("descriptor", {})
+
+                group_services[group_id] = {
+                    "type": "group",
+                    "booking": {
+                        "serviceId": group_id,
+                        "from": connection.get("from", ""),
+                        "to": connection.get("to", ""),
+                        "allocationState": None,
+                        "createdBy": "",
+                        "lockedBy": ("GroupLocked" if gen.get("locked") else ""),
+                        "isRecurrentInstance": False,
+                        "timestamp": "",
+                        "descriptor": {
+                            "label": desc.get("label", ""),
+                            "desc": desc.get("desc", "")
+                        },
+                        "profile": "",
+                        "auditHistory": [],
+                    },
+                    "res": {
+                        "breakAway": spec.get("breakAway"),
+                        "complete": spec.get("complete"),
+                        "missingActiveConnections": spec.get("missingActiveConnections", {}),
+                        "numChildren": spec.get("numChildren", 0),
+                        "children": spec.get("children", {}),
+                        "rev": connection.get("rev", ""),
+                        "state": gen.get("state", None)
+                    }
+                }
+                children_map = spec.get("children", {})
+                for child_id in children_map.keys():
+                    child_to_group[child_id] = group_id
+        except Exception:
+            child_to_group = {}
+        return group_services, child_to_group
+
+class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("High-Performance Table with Sidebar")
-        self.resize(800, 600)
+        uic.loadUi("main.ui", self)
 
-        # Menu Bar
-        menu_bar = self.menuBar()
-        menu_bar.setStyleSheet("background-color:rgb(201, 201, 201); color: black;")
-        file_menu = menu_bar.addMenu("File")
-        exit_action = QAction("Exit", self)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+        self.setSplitterPlacement()
+        
+        self.client = None
+        self._profile_mapping = {}
+        self._endpoint_map = {}
+        self.profileCheckBoxes = []
+        self.currentServices = {}
 
-        # Status Bar
-        self.setStatusBar(QStatusBar())
+        # Build actions
+        self.actionLogin = QtGui.QAction("Login", self)
+        self.actionLogout = QtGui.QAction("Logout", self)
+        self.actionEditSystems = QtGui.QAction("Edit Systems", self)
+        self.menuFile.addAction(self.actionLogin)
+        self.menuFile.addAction(self.actionLogout)
+        self.menuFile.addAction(self.actionEditSystems)
+        self.actionLogin.triggered.connect(self.doLogin)
+        self.actionLogout.triggered.connect(self.doLogout)
+        self.actionEditSystems.triggered.connect(self.editSystems)
 
-        # Main Layout
-        main_layout = QVBoxLayout()
-        central_widget = QWidget()
-        central_widget.setLayout(main_layout)
-        self.setCentralWidget(central_widget)
+        self.actionAbout.triggered.connect(self.showAbout)
+        self.actionSettings.triggered.connect(self.showSettings)
+        # IMPORTANT: Use the async refresh so messages don't overlap connection status.
+        self.actionRefresh.triggered.connect(self.refreshServicesAsync)
 
-        # Top Bar with Toggle Button
-        top_bar = QHBoxLayout()
-        self.toggle_button = QPushButton()
-        self.toggle_button.setFixedSize(30, 30)
-        self.toggle_button.setIcon(QIcon.fromTheme("view-sidebar"))  # Example icon
-        self.toggle_button.clicked.connect(self.toggle_sidebar)
-        top_bar.addWidget(self.toggle_button, alignment=Qt.AlignLeft)
+        # Connection status
+        self.updateConnectionStatus(False)
 
-        # Add top bar to main layout
-        main_layout.addLayout(top_bar)
+        # Model & filter
+        self.serviceModel = QtGui.QStandardItemModel(self)
+        self.filterProxy = ServicesFilterProxy(self)
+        self.filterProxy.setSourceModel(self.serviceModel)
+        self.tableViewServices.setModel(self.filterProxy)
 
-        # Splitter for Sidebar and Table
-        self.splitter = QSplitter(Qt.Horizontal)
+        self.tableViewServices.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.tableViewServices.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tableViewServices.clicked.connect(self.onServiceClicked)
 
-        # Sidebar
-        self.sidebar = QFrame()
-        self.sidebar.setFrameShape(QFrame.StyledPanel)
-        sidebar_layout = QVBoxLayout(self.sidebar)
+        # Alternating row colors for service view
+        self.tableViewServices.setAlternatingRowColors(True)
+        self.tableViewServices.setStyleSheet("""
+            QTableView {
+                background-color: #f5f5f5;
+                alternate-background-color: #e5e5e5;
+            }
+            QTableView::item:selected {
+                background-color: #bdc8ff;
+                color: #000000;
+            }
+        """)
 
-        # Filter Area
-        filter_group = QGroupBox("Filters")
-        filter_layout = QFormLayout(filter_group)
-        self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("Use 'src:' or 'dst:' here...")
-        self.search_box.textChanged.connect(self.on_search_text_changed)
-        filter_layout.addRow(QLabel("Search:"), self.search_box)
+        # Connect selection changed signal
+        self.tableViewServices.selectionModel().selectionChanged.connect(self.onServiceSelectionChanged)
 
-        sidebar_layout.addWidget(filter_group)
-        sidebar_layout.addStretch()  # Push content to the top
-        self.splitter.addWidget(self.sidebar)
+        # Filter widgets
+        self.lineEditSourceFilter.textChanged.connect(self.onSourceFilterChanged)
+        self.lineEditDestinationFilter.textChanged.connect(self.onDestinationFilterChanged)
+        self.dateTimeEditStart.dateTimeChanged.connect(self.onTimeFilterChanged)
+        self.dateTimeEditEnd.dateTimeChanged.connect(self.onTimeFilterChanged)
+        self.checkBoxEnableTimeFilter.stateChanged.connect(self.onTimeFilterChanged)
+        self.buttonResetFilters.clicked.connect(self.onResetFilters)
 
-        # Main Content Area
-        main_content = QWidget()
-        main_content.setLayout(QVBoxLayout())
-        self.splitter.addWidget(main_content)
+        # Profile filters
+        self.scrollAreaProfilesFilters.setWidgetResizable(True)
+        self.layoutProfiles = self.verticalLayoutProfilesList
+        self.layoutProfiles.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
-        # Table in Main Content
-        table_frame = QFrame()
-        table_frame.setFrameShape(QFrame.Box)
-        table_frame.setFrameShadow(QFrame.Raised)
-        table_layout = QVBoxLayout(table_frame)
-        self.table_view = QTableView()
-        data = [
-            ["Row0-Col0", "Row0-Col1"],
-            ["Row1-Col0", "Row1-Col1"],
-            ["Row2-Col0", "Row2-Col1"]
-        ]
-        self.model = MyTableModel(data)
-        self.table_view.setModel(self.model)
-        table_layout.addWidget(self.table_view)
+        # Default date/time = today's 00:00 -> 23:59
+        today = QtCore.QDate.currentDate()
+        start_dt = QtCore.QDateTime(today, QtCore.QTime(0, 0, 0))
+        end_dt = QtCore.QDateTime(today, QtCore.QTime(23, 59, 59))
+        self.dateTimeEditStart.setDateTime(start_dt)
+        self.dateTimeEditEnd.setDateTime(end_dt)
 
-        main_content.layout().addWidget(table_frame)
+        # Setup service details table
+        self.tableWidgetServiceDetails.setColumnCount(2)
+        self.tableWidgetServiceDetails.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tableWidgetServiceDetails.horizontalHeader().setStretchLastSection(True)
+        self.tableWidgetServiceDetails.horizontalHeader().setVisible(False)
+        self.tableWidgetServiceDetails.verticalHeader().setVisible(False)
+        self.tableWidgetServiceDetails.setWordWrap(True)
+        self.tableWidgetServiceDetails.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tableWidgetServiceDetails.verticalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tableWidgetServiceDetails.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectItems
+        )
+        self.tableWidgetServiceDetails.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.tableWidgetServiceDetails.cellClicked.connect(self._onDetailsCellClicked)
 
-        # Add Splitter to Main Layout
-        main_layout.addWidget(self.splitter)
+        # Alternating row colors for details view
+        self.tableWidgetServiceDetails.setAlternatingRowColors(True)
+        self.tableWidgetServiceDetails.setStyleSheet("""
+            QTableWidget {
+                background-color: #f5f5f5;
+                alternate-background-color: #e5e5e5;
+            }
+        """)
 
-    def toggle_sidebar(self):
-        if self.sidebar.isVisible():
-            self.sidebar.hide()
-            self.splitter.setSizes([0, 1])
-            self.toggle_button.setIcon(QIcon.fromTheme("go-next"))  # Icon for "hidden"
+        # Session timer
+        self.sessionTimer = QtCore.QTimer(self)
+        self.sessionTimer.setInterval(30000)
+        self.sessionTimer.timeout.connect(self.checkSession)
+        self.sessionTimer.start()
+
+        # Add a permanent status message label (right side) to avoid overlapping connection status.
+        self.statusMsgLabel = QtWidgets.QLabel("")
+        self.statusBar().addPermanentWidget(self.statusMsgLabel)
+
+    def setSplitterPlacement(self):
+        splitter = self.findChild(QtWidgets.QSplitter, "splitterCentral")
+        if splitter is None:
+            print("Warning: QSplitter with objectName 'splitterCentral' not found. Please check your .ui file.")
+            return
+        splitter.setSizes([400, 340])
+    
+    def doLogin(self):
+        while True:
+            dlg = LoginDialog()
+            if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                break
+            server_url, username, password = dlg.getCredentials()
+            self.client = VideoIPathClient(server_url)
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                try:
+                    self.client.login(username, password)
+                except VideoIPathClientError as e:
+                    QtWidgets.QMessageBox.critical(self, "Login Failed", str(e))
+                    self.client = None
+                    self.updateConnectionStatus(False)
+                    continue
+                insecure_warning = any("SSL verification failed" in str(warning.message) for warning in w)
+                self.client.ssl_verified = not insecure_warning
+            self.updateConnectionStatus(True, getattr(self.client, "ssl_verified", True))
+            self.refreshServicesAsync()  # Use async refresh now.
+            break
+
+    def doLogout(self):
+        if self.client:
+            try:
+                self.client.logout()
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Logout Error", str(e))
+        self.client = None
+        self.updateConnectionStatus(False)
+        self.clearAppState()
+
+    def clearAppState(self):
+        # Clear service table and details
+        self.serviceModel.clear()
+        self.tableWidgetServiceDetails.setRowCount(0)
+        self.tableViewServices.clearSelection()
+        self.currentServices.clear()
+
+        # Reset filters
+        self.lineEditSourceFilter.clear()
+        self.lineEditDestinationFilter.clear()
+        self.checkBoxEnableTimeFilter.setChecked(False)
+        today = QtCore.QDate.currentDate()
+        self.dateTimeEditStart.setDateTime(QtCore.QDateTime(today, QtCore.QTime(0, 0, 0)))
+        self.dateTimeEditEnd.setDateTime(QtCore.QDateTime(today, QtCore.QTime(23, 59, 59)))
+
+        # Clear profile checkboxes
+        while self.layoutProfiles.count() > 0:
+            item = self.layoutProfiles.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self.profileCheckBoxes.clear()
+
+    def editSystems(self):
+        from systems_editor_dialog import SystemsEditorDialog
+        dlg = SystemsEditorDialog(self)
+        dlg.exec()
+
+    def updateConnectionStatus(self, connected: bool, ssl_verified: bool = True):
+        if connected:
+            if ssl_verified:
+                self.frameConnectionIndicator.setStyleSheet("background-color: green;")
+                self.labelConnectionStatusText.setText("Connected")
+            else:
+                self.frameConnectionIndicator.setStyleSheet("background-color: yellow;")
+                self.labelConnectionStatusText.setText("Connected (SSL not verified)")
         else:
-            self.sidebar.show()
-            self.splitter.setSizes([1, 3])
-            self.toggle_button.setIcon(QIcon.fromTheme("view-sidebar"))  # Icon for "shown"
+            self.frameConnectionIndicator.setStyleSheet("background-color: grey;")
+            self.labelConnectionStatusText.setText("No Connection")
 
-    def on_search_text_changed(self, text):
-        # Placeholder for future filtering logic
-        pass
+    def showAbout(self):
+        dlg = QtWidgets.QDialog()
+        uic.loadUi("about_dialog.ui", dlg)
+        dlg.exec()
 
+    def showSettings(self):
+        dlg = QtWidgets.QDialog()
+        uic.loadUi("settings_dialog.ui", dlg)
+        dlg.exec()
+
+    def _onDetailsCellClicked(self, row: int, col: int):
+        if col != 1:
+            return
+
+        item = self.tableWidgetServiceDetails.item(row, col)
+        if not item:
+            return
+
+        parent_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if not parent_id:
+            return
+
+        group_svc = self.currentServices.get(parent_id)
+        if not group_svc:
+            group_svc = self._fetchSingleGroupConnection(parent_id)
+            if not group_svc:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Group Parent",
+                    f"Could not locate group parent '{parent_id}' in the remote system."
+                )
+                return
+            self.currentServices[parent_id] = group_svc
+
+        dlg = GroupDetailDialog(parent_id, group_svc, parent=self)
+        dlg.exec()
+
+    def refreshServicesAsync(self):
+        self.statusMsgLabel.setText("Refreshing services...")
+        worker = RefreshServicesWorker(self.client)
+        worker.signals.finished.connect(self.onServicesRetrieved)
+        worker.signals.error.connect(self.onServicesError)
+        QtCore.QThreadPool.globalInstance().start(worker)
+
+    def onServicesRetrieved(self, result):
+        merged = result["merged"]
+        used_profile_ids = result["used_profile_ids"]
+        self.currentServices = merged
+
+        # Update the profile mapping so that profile names are used.
+        self._profile_mapping = result["profile_mapping"]
+
+        # Create a new model and populate it.
+        new_model = QtGui.QStandardItemModel(self)
+        new_model.setHorizontalHeaderLabels(["Service ID", "Source", "Destination", "Start", "Profile"])
+        
+        for svc_id, svc_data in merged.items():
+            booking = svc_data.get("booking", {})
+            desc = booking.get("descriptor", {})
+            label = desc.get("label", "")
+            match = re.match(r'(.+?)\s*->\s*(.+)', label)
+            if match:
+                src = match.group(1).strip()
+                dst = match.group(2).strip()
+            else:
+                src = label
+                dst = ""
+            start_ts = booking.get("start")
+            start_str = ""
+            if start_ts:
+                try:
+                    dt_val = datetime.fromtimestamp(int(start_ts) / 1000)
+                    start_str = dt_val.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    pass
+            pid = booking.get("profile", "")
+            # Use the profile name lookup from the updated mapping.
+            prof_name = self._profile_mapping.get(pid, pid)
+            row_items = [
+                QtGui.QStandardItem(str(booking.get("serviceId", svc_id))),
+                QtGui.QStandardItem(src),
+                QtGui.QStandardItem(dst),
+                QtGui.QStandardItem(start_str),
+                QtGui.QStandardItem(str(prof_name)),
+            ]
+            new_model.appendRow(row_items)
+        
+        # Update the proxy with the new model.
+        self.filterProxy.setSourceModel(new_model)
+        self.serviceModel = new_model
+
+        self._rebuildProfileCheckboxes(used_profile_ids)
+        self._setTableViewColumnWidths()
+        self.statusMsgLabel.setText("Services refreshed")
+        QtCore.QTimer.singleShot(3000, lambda: self.statusMsgLabel.setText(""))
+
+    def onServicesError(self, error_msg):
+        QtWidgets.QMessageBox.critical(self, "Error Refreshing Services", error_msg)
+        self.statusMsgLabel.setText("Error refreshing services")
+        QtCore.QTimer.singleShot(3000, lambda: self.statusMsgLabel.setText(""))
+
+    def displayServiceDetails(self, svc_id: str):
+        raw_svc = self.currentServices.get(svc_id, {})
+        self.tableWidgetServiceDetails.setRowCount(0)
+
+        def add_detail(field: str, val: str, user_data=None, is_link=False):
+            r = self.tableWidgetServiceDetails.rowCount()
+            self.tableWidgetServiceDetails.insertRow(r)
+
+            item_field = QtWidgets.QTableWidgetItem(field)
+            item_field.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
+            self.tableWidgetServiceDetails.setItem(r, 0, item_field)
+
+            item_val = QtWidgets.QTableWidgetItem(val)
+            item_val.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
+            if is_link:
+                brush = QtGui.QBrush(QtGui.QColor("blue"))
+                item_val.setForeground(brush)
+                font = item_val.font()
+                font.setUnderline(True)
+                item_val.setFont(font)
+                if user_data is not None:
+                    item_val.setData(QtCore.Qt.ItemDataRole.UserRole, user_data)
+            self.tableWidgetServiceDetails.setItem(r, 1, item_val)
+
+        svc_type = raw_svc.get("type", "")
+        if svc_type == "group":
+            add_detail("Service Kind", "Group-Based Service")
+        else:
+            group_par = raw_svc.get("groupParent", "")
+            if group_par:
+                add_detail("Service Kind", f"Endpoint-Based (Child of group {group_par})")
+            else:
+                add_detail("Service Kind", "Endpoint-Based Service")
+        if svc_type:
+            add_detail("type", str(svc_type))
+        booking = raw_svc.get("booking", {})
+        add_detail("serviceId", str(booking.get("serviceId", svc_id)))
+        if "allocationState" in booking:
+            add_detail("allocationState", str(booking["allocationState"]))
+        add_detail("createdBy", str(booking.get("createdBy", "")))
+        add_detail("lockedBy", str(booking.get("lockedBy", "")))
+        add_detail("isRecurrentInstance", str(booking.get("isRecurrentInstance", False)))
+        add_detail("timestamp", str(booking.get("timestamp", "")))
+        group_parent_id = raw_svc.get("groupParent", "")
+        if group_parent_id:
+            add_detail("Group Parent", group_parent_id, user_data=group_parent_id, is_link=True)
+
+        from_uid = booking.get("from", "")
+        to_uid   = booking.get("to", "")
+        from_label = self._endpoint_map.get(from_uid, from_uid)
+        to_label   = self._endpoint_map.get(to_uid, to_uid)
+        descriptor = booking.get("descriptor", {})
+        desc_label = descriptor.get("label", "")
+        add_detail("descriptor.label", desc_label)
+        add_detail("descriptor.desc", descriptor.get("desc", ""))
+        m = re.match(r'(.+?)\s*->\s*(.+)', desc_label)
+        if m:
+            from_label, to_label = m.group(1).strip(), m.group(2).strip()
+        add_detail("from label", from_label)
+        add_detail("from device", from_uid)
+        add_detail("to label", to_label)
+        add_detail("to device", to_uid)
+        add_detail("start", str(booking.get("start", "")))
+        add_detail("end", str(booking.get("end", "")))
+        add_detail("cancelTime", str(booking.get("cancelTime", "")))
+        prof_id = booking.get("profile", "")
+        prof_name = self._profile_mapping.get(prof_id, prof_id)
+        add_detail("profile name", prof_name)
+        add_detail("profile ID", prof_id)
+        for i, audit in enumerate(booking.get("auditHistory", []), start=1):
+            combined = (
+                f"msg: {audit.get('msg','')}\n"
+                f"user: {audit.get('user','')}\n"
+                f"rev: {audit.get('rev','')}\n"
+                f"ts: {audit.get('ts','')}"
+            )
+            add_detail(f"auditHistory[{i}]", combined)
+        res_data = raw_svc.get("res")
+        if res_data is not None:
+            add_detail("res", json.dumps(res_data, indent=2))
+
+    def _setTableViewColumnWidths(self):
+        header = self.tableViewServices.horizontalHeader()
+        for col in range(self.serviceModel.columnCount()):
+            header.setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeMode.Fixed)
+        self.tableViewServices.setColumnWidth(0, 100)
+        self.tableViewServices.setColumnWidth(1, 250)
+        self.tableViewServices.setColumnWidth(2, 250)
+        self.tableViewServices.setColumnWidth(3, 150)
+        self.tableViewServices.setColumnWidth(4, 150)
+
+    def _fetchSingleGroupConnection(self, group_id: str) -> dict | None:
+        try:
+            url = (
+                "/rest/v1/data/status/conman/services/"
+                "*%20where%20type='group'/connection/"
+                "connection.generic,generic/**/.../.../connection.to,from,to,id,rev,specific/"
+                "specific.breakAway,breakAway,complete,missingActiveConnections,numChildren,children/*"
+            )
+            resp = self.client.get(url)
+            conman = resp.get("data", {}).get("status", {}).get("conman", {})
+            raw_services = conman.get("services", {})
+
+            for svc_key, svc_data in raw_services.items():
+                connection = svc_data.get("connection", {})
+                g_id = connection.get("id", svc_key)
+                if g_id == group_id:
+                    gen = connection.get("generic", {})
+                    spec = connection.get("specific", {})
+                    desc = gen.get("descriptor", {})
+
+                    service_dict = {
+                        "type": "group",
+                        "booking": {
+                            "serviceId": g_id,
+                            "from": connection.get("from",""),
+                            "to": connection.get("to",""),
+                            "allocationState": None,
+                            "createdBy": "",
+                            "lockedBy": ("GroupLocked" if gen.get("locked") else ""),
+                            "isRecurrentInstance": False,
+                            "timestamp": "",
+                            "descriptor": {
+                                "label": desc.get("label",""),
+                                "desc": desc.get("desc","")
+                            },
+                            "profile": "",
+                            "auditHistory": [],
+                        },
+                        "res": {
+                            "breakAway": spec.get("breakAway"),
+                            "complete": spec.get("complete"),
+                            "missingActiveConnections": spec.get("missingActiveConnections", {}),
+                            "numChildren": spec.get("numChildren", 0),
+                            "children": spec.get("children", {}),
+                            "rev": connection.get("rev", ""),
+                            "state": gen.get("state", None)
+                        }
+                    }
+                    return service_dict
+        except VideoIPathClientError:
+            pass
+        return None
+
+    def _retrieve_group_connections(self) -> dict:
+        group_services = {}
+        self._child_to_group = {}
+
+        try:
+            url = (
+                "/rest/v1/data/status/conman/services/"
+                "*%20where%20type='group'/connection/"
+                "connection.generic,generic/**/.../.../connection.to,from,to,id,rev,specific/"
+                "specific.breakAway,breakAway,complete,missingActiveConnections,numChildren,children/*"
+            )
+            resp = self.client.get(url)
+            conman = resp.get("data", {}).get("status", {}).get("conman", {})
+            raw_services = conman.get("services", {})
+
+            for svc_key, svc_data in raw_services.items():
+                connection = svc_data.get("connection", {})
+                group_id = connection.get("id", svc_key)
+                gen = connection.get("generic", {})
+                spec = connection.get("specific", {})
+                desc = gen.get("descriptor", {})
+
+                group_services[group_id] = {
+                    "type": "group",
+                    "booking": {
+                        "serviceId": group_id,
+                        "from": connection.get("from",""),
+                        "to": connection.get("to",""),
+                        "allocationState": None,
+                        "createdBy": "",
+                        "lockedBy": ("GroupLocked" if gen.get("locked") else ""),
+                        "isRecurrentInstance": False,
+                        "timestamp": "",
+                        "descriptor": {
+                            "label": desc.get("label",""),
+                            "desc": desc.get("desc","")
+                        },
+                        "profile": "",
+                        "auditHistory": [],
+                    },
+                    "res": {
+                        "breakAway": spec.get("breakAway"),
+                        "complete": spec.get("complete"),
+                        "missingActiveConnections": spec.get("missingActiveConnections", {}),
+                        "numChildren": spec.get("numChildren", 0),
+                        "children": spec.get("children", {}),
+                        "rev": connection.get("rev", ""),
+                        "state": gen.get("state", None)
+                    }
+                }
+
+                children_map = spec.get("children", {})
+                for child_id in children_map.keys():
+                    self._child_to_group[child_id] = group_id
+
+        except VideoIPathClientError:
+            self._child_to_group = {}
+            pass
+
+        return group_services
+
+    def _addServiceToTable(self, svc_id: str, svc_data: dict):
+        self.currentServices[svc_id] = svc_data
+
+        booking = svc_data.get("booking", {})
+        desc = booking.get("descriptor", {})
+        label = desc.get("label","")
+
+        match = re.match(r'(.+?)\s*->\s*(.+)', label)
+        if match:
+            src = match.group(1).strip()
+            dst = match.group(2).strip()
+        else:
+            src = label
+            dst = ""
+
+        start_ts = booking.get("start")
+        start_str = ""
+        if start_ts:
+            try:
+                dt_val = datetime.fromtimestamp(int(start_ts)/1000)
+                start_str = dt_val.strftime("%Y-%m-%d %H:%M:%S")  # updated format
+            except Exception:
+                pass
+
+        pid = booking.get("profile","")
+        prof_name = self._profile_mapping.get(pid, pid)
+
+        row_items = [
+            QtGui.QStandardItem(str(booking.get("serviceId", svc_id))),
+            QtGui.QStandardItem(src),
+            QtGui.QStandardItem(dst),
+            QtGui.QStandardItem(start_str),
+            QtGui.QStandardItem(str(prof_name)),
+        ]
+        self.serviceModel.appendRow(row_items)
+
+    def _loadEndpointData(self):
+        self._endpoint_map = {}
+
+        try:
+            resp_local = self.client.get("/rest/v1/data/config/network/nGraphElements/**")
+            ngraph = resp_local.get("data", {}).get("config", {}).get("network", {}).get("nGraphElements", {})
+            for node_id, node_data in ngraph.items():
+                val = node_data.get("value", {})
+                label = val.get("descriptor", {}).get("label", "")
+                if label:
+                    self._endpoint_map[node_id] = label
+                else:
+                    self._endpoint_map[node_id] = node_id
+        except VideoIPathClientError:
+            pass
+
+        try:
+            resp_ext = self.client.get("/rest/v1/data/status/network/externalEndpoints/**")
+            ext_data = resp_ext.get("data", {}).get("status", {}).get("network", {}).get("externalEndpoints", {})
+            for ext_id, ext_val in ext_data.items():
+                desc_obj = ext_val.get("descriptor", {})
+                lbl = desc_obj.get("label") or ""
+                if lbl:
+                    self._endpoint_map[ext_id] = lbl
+                else:
+                    self._endpoint_map[ext_id] = ext_id
+        except VideoIPathClientError:
+            pass
+
+    def checkSession(self):
+        if not self.client:
+            return
+        try:
+            if not self.client.validate_session():
+                self.updateConnectionStatus(False)
+                self.client = None
+                QtWidgets.QMessageBox.warning(self, "Session Expired", "Your session has expired. Please log in again.")
+        except VideoIPathClientError as e:
+            self.updateConnectionStatus(False)
+            self.client = None
+            QtWidgets.QMessageBox.warning(self, "Session Check Failed", str(e))
+
+    def _rebuildProfileCheckboxes(self, used_profile_ids):
+        while self.layoutProfiles.count() > 0:
+            item = self.layoutProfiles.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self.profileCheckBoxes.clear()
+
+        sorted_pids = sorted(used_profile_ids, key=lambda pid: self._profile_mapping.get(pid, pid).lower())
+        for pid in sorted_pids:
+            pname = self._profile_mapping.get(pid, pid)
+            cb = QtWidgets.QCheckBox(pname, self.scrollAreaWidgetProfilesFilters)
+            cb.stateChanged.connect(self.onProfilesFilterChanged)
+            self.layoutProfiles.addWidget(cb)
+            self.profileCheckBoxes.append((cb, pname))
+
+    def onSourceFilterChanged(self, text: str):
+        self.filterProxy.setSourceFilterText(text)
+        QtCore.QTimer.singleShot(0, self.updateServiceSelection)
+
+    def onDestinationFilterChanged(self, text: str):
+        self.filterProxy.setDestinationFilterText(text)
+        QtCore.QTimer.singleShot(0, self.updateServiceSelection)
+
+    def onTimeFilterChanged(self):
+        if self.checkBoxEnableTimeFilter.isChecked():
+            start_dt = self.dateTimeEditStart.dateTime()
+            end_dt = self.dateTimeEditEnd.dateTime()
+            if not start_dt.isValid():
+                start_dt = None
+            if not end_dt.isValid():
+                end_dt = None
+        else:
+            start_dt = None
+            end_dt = None
+        self.filterProxy.setStartRange(start_dt, end_dt)
+        QtCore.QTimer.singleShot(0, self.updateServiceSelection)
+
+    def onProfilesFilterChanged(self):
+        chosen = []
+        for cb, pname in self.profileCheckBoxes:
+            if cb.isChecked():
+                chosen.append(pname)
+        self.filterProxy.setActiveProfiles(chosen)
+        QtCore.QTimer.singleShot(0, self.updateServiceSelection)
+
+    def onResetFilters(self):
+        self.lineEditSourceFilter.clear()
+        self.lineEditDestinationFilter.clear()
+        self.checkBoxEnableTimeFilter.setChecked(False)
+        today = QtCore.QDate.currentDate()
+        self.dateTimeEditStart.setDateTime(QtCore.QDateTime(today, QtCore.QTime(0, 0, 0)))
+        self.dateTimeEditEnd.setDateTime(QtCore.QDateTime(today, QtCore.QTime(23, 59, 59)))
+        for cb, _ in self.profileCheckBoxes:
+            cb.setChecked(False)
+        QtCore.QTimer.singleShot(0, self.updateServiceSelection)
+
+    def onServiceClicked(self, index: QtCore.QModelIndex):
+        svc_id = self.filterProxy.index(index.row(), 0).data()
+        self.displayServiceDetails(svc_id)
+
+    def onServiceSelectionChanged(self, selected, deselected):
+        indexes = self.tableViewServices.selectionModel().selectedRows()
+        if indexes:
+            row = indexes[0].row()
+            svc_id = self.filterProxy.index(row, 0).data()
+            self.displayServiceDetails(svc_id)
+        else:
+            self.tableWidgetServiceDetails.setRowCount(0)
+
+    def updateServiceSelection(self):
+        selection = self.tableViewServices.selectionModel().selectedRows()
+        if not selection:
+            self.tableWidgetServiceDetails.setRowCount(0)
+            return
+
+        selected_index = selection[0]
+        service_id = self.filterProxy.index(selected_index.row(), 0).data()
+
+        found = False
+        new_index = None
+        for row in range(self.filterProxy.rowCount()):
+            idx = self.filterProxy.index(row, 0)
+            if idx.data() == service_id:
+                found = True
+                new_index = idx
+                break
+
+        if not found:
+            self.tableViewServices.clearSelection()
+            self.tableWidgetServiceDetails.setRowCount(0)
+        else:
+            if selected_index.row() != new_index.row():
+                self.tableViewServices.selectionModel().select(
+                    new_index,
+                    QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows
+                )
+            self.onServiceSelectionChanged(None, None)
+
+    def clearServiceSelection(self):
+        self.tableViewServices.clearSelection()
+        self.tableWidgetServiceDetails.setRowCount(0)
+
+class GroupDetailDialog(QtWidgets.QDialog):
+    def __init__(self, group_id: str, group_data: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Group Service: {group_id}")
+        self.resize(700, 400)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self.detailsTable = QtWidgets.QTableWidget(self)
+        self.detailsTable.setColumnCount(2)
+        self.detailsTable.horizontalHeader().setVisible(False)
+        self.detailsTable.verticalHeader().setVisible(False)
+        self.detailsTable.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.detailsTable.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.detailsTable.setWordWrap(True)
+        layout.addWidget(self.detailsTable)
+
+        self._populateTable(group_id, group_data)
+
+    def _populateTable(self, group_id: str, group_data: dict):
+        self.detailsTable.setRowCount(0)
+
+        def add_row(field: str, val: str):
+            r = self.detailsTable.rowCount()
+            self.detailsTable.insertRow(r)
+            item_field = QtWidgets.QTableWidgetItem(field)
+            item_field.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
+            self.detailsTable.setItem(r, 0, item_field)
+
+            item_val = QtWidgets.QTableWidgetItem(val)
+            item_val.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
+            item_val.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
+            self.detailsTable.setItem(r, 1, item_val)
+
+        add_row("Service Kind", "Group-Based Service")
+        booking = group_data.get("booking", {})
+        add_row("serviceId", booking.get("serviceId", group_id))
+        add_row("lockedBy", booking.get("lockedBy", ""))
+        add_row("from", booking.get("from", ""))
+        add_row("to", booking.get("to", ""))
+        descriptor = booking.get("descriptor", {})
+        add_row("descriptor.label", descriptor.get("label", ""))
+        add_row("descriptor.desc", descriptor.get("desc", ""))
+        res_obj = group_data.get("res", {})
+        json_str = json.dumps(res_obj, indent=2)
+        add_row("res", json_str)
 
 def main():
-    app = QApplication(sys.argv)
+
+    app = QtWidgets.QApplication(sys.argv)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

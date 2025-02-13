@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>LoginDialog</class>
+ <widget class="QDialog" name="LoginDialog">
+  <property name="windowTitle">
+   <string>Login</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <layout class="QFormLayout" name="formLayout">
+     <item row="0" column="0">
+      <widget class="QLabel" name="labelRemoteSystem">
+       <property name="text">
+        <string>Remote System:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QComboBox" name="comboBoxRemoteSystems"/>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="labelUsername">
+       <property name="text">
+        <string>Username:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QLineEdit" name="usernameLineEdit"/>
+     </item>
+     <item row="2" column="0">
+      <widget class="QLabel" name="labelPassword">
+       <property name="text">
+        <string>Password:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="QLineEdit" name="passwordLineEdit">
+       <property name="echoMode">
+        <enum>QLineEdit::Password</enum>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QPushButton" name="loginButton">
+     <property name="text">
+      <string>Login</string>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
