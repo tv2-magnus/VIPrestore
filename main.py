@@ -1,8 +1,9 @@
 import sys
 import re
 import json
-import warnings
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
+from qasync import QEventLoop, asyncSlot
 
 from PyQt6 import QtWidgets, uic, QtGui, QtCore
 from PyQt6.QtGui import QAction
@@ -86,136 +87,6 @@ class WorkerSignals(QtCore.QObject):
     finished = QtCore.pyqtSignal(dict)
     error = QtCore.pyqtSignal(str)
 
-class RefreshServicesWorker(QtCore.QRunnable):
-    def __init__(self, client):
-        super().__init__()
-        self.client = client
-        self.signals = WorkerSignals()
-
-    def run(self):
-        try:
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                future_normal = executor.submit(self.client.retrieve_services)
-                future_profiles = executor.submit(
-                    lambda: self.client.get("/rest/v1/data/config/profiles/*/id,name,description,tags/**")
-                )
-                future_ep_local = executor.submit(
-                    lambda: self.client.get("/rest/v1/data/config/network/nGraphElements/**")
-                )
-                future_ep_ext = executor.submit(
-                    lambda: self.client.get("/rest/v1/data/status/network/externalEndpoints/**")
-                )
-                future_group = executor.submit(self.retrieve_group_connections)
-
-                normal_services = future_normal.result()
-
-                profiles_resp = future_profiles.result()
-                prof_data = profiles_resp.get("data", {}).get("config", {}).get("profiles", {})
-                profile_mapping = {pid: info.get("name", pid) for pid, info in prof_data.items()}
-
-                endpoint_map = {}
-                try:
-                    resp_local = future_ep_local.result()
-                    ngraph = resp_local.get("data", {}).get("config", {}).get("network", {}).get("nGraphElements", {})
-                    for node_id, node_data in ngraph.items():
-                        val = node_data.get("value", {})
-                        label = val.get("descriptor", {}).get("label", "")
-                        endpoint_map[node_id] = label if label else node_id
-                except Exception:
-                    pass
-                try:
-                    resp_ext = future_ep_ext.result()
-                    ext_data = resp_ext.get("data", {}).get("status", {}).get("network", {}).get("externalEndpoints", {})
-                    for ext_id, ext_val in ext_data.items():
-                        desc_obj = ext_val.get("descriptor", {})
-                        lbl = desc_obj.get("label") or ""
-                        endpoint_map[ext_id] = lbl if lbl else ext_id
-                except Exception:
-                    pass
-
-                group_services, child_to_group = future_group.result()
-
-            merged = {}
-            merged.update(normal_services)
-            merged.update(group_services)
-            for svc_id, svc_obj in normal_services.items():
-                if svc_id in child_to_group:
-                    svc_obj["groupParent"] = child_to_group[svc_id]
-
-            used_profile_ids = set()
-            for svc_id, svc_data in merged.items():
-                booking = svc_data.get("booking", {})
-                pid = booking.get("profile", "")
-                if pid:
-                    used_profile_ids.add(pid)
-
-            result = {
-                "merged": merged,
-                "used_profile_ids": used_profile_ids,
-                "profile_mapping": profile_mapping,
-                "endpoint_map": endpoint_map,
-                "child_to_group": child_to_group,
-            }
-            self.signals.finished.emit(result)
-        except Exception as e:
-            self.signals.error.emit(str(e))
-
-    def retrieve_group_connections(self):
-        group_services = {}
-        child_to_group = {}
-        try:
-            url = (
-                "/rest/v1/data/status/conman/services/"
-                "*%20where%20type='group'/connection/"
-                "connection.generic,generic/**/.../.../connection.to,from,to,id,rev,specific/"
-                "specific.breakAway,breakAway,complete,missingActiveConnections,numChildren,children/*"
-            )
-            resp = self.client.get(url)
-            conman = resp.get("data", {}).get("status", {}).get("conman", {})
-            raw_services = conman.get("services", {})
-
-            for svc_key, svc_data in raw_services.items():
-                connection = svc_data.get("connection", {})
-                group_id = connection.get("id", svc_key)
-                gen = connection.get("generic", {})
-                spec = connection.get("specific", {})
-                desc = gen.get("descriptor", {})
-
-                group_services[group_id] = {
-                    "type": "group",
-                    "booking": {
-                        "serviceId": group_id,
-                        "from": connection.get("from", ""),
-                        "to": connection.get("to", ""),
-                        "allocationState": None,
-                        "createdBy": "",
-                        "lockedBy": ("GroupLocked" if gen.get("locked") else ""),
-                        "isRecurrentInstance": False,
-                        "timestamp": "",
-                        "descriptor": {
-                            "label": desc.get("label", ""),
-                            "desc": desc.get("desc", "")
-                        },
-                        "profile": "",
-                        "auditHistory": [],
-                    },
-                    "res": {
-                        "breakAway": spec.get("breakAway"),
-                        "complete": spec.get("complete"),
-                        "missingActiveConnections": spec.get("missingActiveConnections", {}),
-                        "numChildren": spec.get("numChildren", 0),
-                        "children": spec.get("children", {}),
-                        "rev": connection.get("rev", ""),
-                        "state": gen.get("state", None)
-                    }
-                }
-                children_map = spec.get("children", {})
-                for child_id in children_map.keys():
-                    child_to_group[child_id] = group_id
-        except Exception:
-            child_to_group = {}
-        return group_services, child_to_group
-
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -236,7 +107,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.menuFile.addAction(self.actionLogin)
         self.menuFile.addAction(self.actionLogout)
         self.menuFile.addAction(self.actionEditSystems)
-        self.actionLogin.triggered.connect(self.doLogin)
+        self.actionLogin.triggered.connect(lambda: asyncio.create_task(self.doLogin()))
+        self.actionRefresh.triggered.connect(lambda: asyncio.create_task(self.refreshServicesAsync()))
         self.actionLogout.triggered.connect(self.doLogout)
         self.actionEditSystems.triggered.connect(self.editSystems)
 
@@ -253,6 +125,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.filterProxy = ServicesFilterProxy(self)
         self.filterProxy.setSourceModel(self.serviceModel)
         self.tableViewServices.setModel(self.filterProxy)
+        self.tableViewServices.setSortingEnabled(True)
 
         self.tableViewServices.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.tableViewServices.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
@@ -340,32 +213,25 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         splitter.setSizes([400, 340])
     
-    def doLogin(self):
+    async def doLogin(self):
         while True:
             dlg = LoginDialog()
             if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
                 break
             server_url, username, password = dlg.getCredentials()
             self.client = VideoIPathClient(server_url)
+            loop = asyncio.get_running_loop()
             try:
-                self.client.login(username, password)
-
-                # Fetch session info (includes username & roles)
-                session_info = self.client.get("/api/_session")
+                await loop.run_in_executor(None, self.client.login, username, password)
+                session_info = await loop.run_in_executor(None, lambda: self.client.get("/api/_session"))
                 user_data = session_info.get("userCtx", {})
-                username = user_data.get("name", "unknown")
+                username_disp = user_data.get("name", "unknown")
                 roles = user_data.get("roles", [])
-
-                # Combine into a formatted display string
                 roles_str = ", ".join(roles) if roles else "No roles"
-                user_status_text = f"User: {username} | Role(s): {roles_str}"
-
-                # Update the status bar with user info
+                user_status_text = f"User: {username_disp} | Role(s): {roles_str}"
                 self.updateUserStatus(user_status_text)
-
-                print(f"Logged-in User: {username}")
+                print(f"Logged-in User: {username_disp}")
                 print(f"Roles: {roles_str}")
-
             except VideoIPathClientError as e:
                 QtWidgets.QMessageBox.critical(self, "Login Failed", str(e))
                 self.client = None
@@ -373,7 +239,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
 
             self.updateConnectionStatus(True)
-            self.refreshServicesAsync()
+            await self.refreshServicesAsync()
             break
 
     def updateUserStatus(self, text):
@@ -468,12 +334,77 @@ class MainWindow(QtWidgets.QMainWindow):
         dlg = GroupDetailDialog(parent_id, group_svc, parent=self)
         dlg.exec()
 
-    def refreshServicesAsync(self):
+    async def refreshServicesAsync(self):
         self.statusMsgLabel.setText("Refreshing services...")
-        worker = RefreshServicesWorker(self.client)
-        worker.signals.finished.connect(self.onServicesRetrieved)
-        worker.signals.error.connect(self.onServicesError)
-        QtCore.QThreadPool.globalInstance().start(worker)
+        loop = asyncio.get_running_loop()
+        try:
+            # Run network calls concurrently in a thread executor
+            future_normal   = loop.run_in_executor(None, self.client.retrieve_services)
+            future_profiles = loop.run_in_executor(
+                None, lambda: self.client.get("/rest/v1/data/config/profiles/*/id,name,description,tags/**")
+            )
+            future_ep_local = loop.run_in_executor(
+                None, lambda: self.client.get("/rest/v1/data/config/network/nGraphElements/**")
+            )
+            future_ep_ext   = loop.run_in_executor(
+                None, lambda: self.client.get("/rest/v1/data/status/network/externalEndpoints/**")
+            )
+            future_group    = loop.run_in_executor(None, self._retrieve_group_connections)
+            
+            (normal_services, profiles_resp, resp_local, resp_ext, group_res) = await asyncio.gather(
+                future_normal, future_profiles, future_ep_local, future_ep_ext, future_group
+            )
+            group_services, child_to_group = group_res
+            
+            merged = {}
+            merged.update(normal_services)
+            merged.update(group_services)
+            for svc_id, svc_obj in normal_services.items():
+                if svc_id in child_to_group:
+                    svc_obj["groupParent"] = child_to_group[svc_id]
+            
+            used_profile_ids = set()
+            for svc_id, svc_data in merged.items():
+                booking = svc_data.get("booking", {})
+                pid = booking.get("profile", "")
+                if pid:
+                    used_profile_ids.add(pid)
+            
+            prof_data = profiles_resp.get("data", {}).get("config", {}).get("profiles", {})
+            profile_mapping = {pid: info.get("name", pid) for pid, info in prof_data.items()}
+            
+            endpoint_map = {}
+            try:
+                ngraph = resp_local.get("data", {}).get("config", {}).get("network", {}).get("nGraphElements", {})
+                for node_id, node_data in ngraph.items():
+                    val = node_data.get("value", {})
+                    label = val.get("descriptor", {}).get("label", "")
+                    endpoint_map[node_id] = label if label else node_id
+            except Exception:
+                pass
+            try:
+                ext_data = resp_ext.get("data", {}).get("status", {}).get("network", {}).get("externalEndpoints", {})
+                for ext_id, ext_val in ext_data.items():
+                    desc_obj = ext_val.get("descriptor", {})
+                    lbl = desc_obj.get("label") or ""
+                    endpoint_map[ext_id] = lbl if lbl else ext_id
+            except Exception:
+                pass
+            
+            result = {
+                "merged": merged,
+                "used_profile_ids": used_profile_ids,
+                "profile_mapping": profile_mapping,
+                "endpoint_map": endpoint_map,
+                "child_to_group": child_to_group,
+            }
+            self.onServicesRetrieved(result)
+        except Exception as e:
+            self.onServicesError(str(e))
+        finally:
+            self.statusMsgLabel.setText("Services refreshed")
+            await asyncio.sleep(3)
+            self.statusMsgLabel.setText("")
 
     def onServicesRetrieved(self, result):
         merged = result["merged"]
@@ -594,8 +525,34 @@ class MainWindow(QtWidgets.QMainWindow):
         add_detail("from device", from_uid)
         add_detail("to label", to_label)
         add_detail("to device", to_uid)
-        add_detail("start", str(booking.get("start", "")))
-        add_detail("end", str(booking.get("end", "")))
+
+        # Convert start timestamp
+        start_ts = booking.get("start", "")
+        if start_ts:
+            try:
+                dt_val = datetime.fromtimestamp(int(start_ts) / 1000)
+                start_str = dt_val.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                start_str = start_ts
+        else:
+            start_str = ""
+        add_detail("start", start_str)
+
+        # Convert end timestamp with check for >10 years in the future
+        end_ts = booking.get("end", "")
+        if end_ts:
+            try:
+                dt_val = datetime.fromtimestamp(int(end_ts) / 1000)
+                if dt_val - datetime.now() > timedelta(days=3650):
+                    end_str = "∞"
+                else:
+                    end_str = dt_val.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                end_str = end_ts
+        else:
+            end_str = ""
+        add_detail("end", end_str)
+
         add_detail("cancelTime", str(booking.get("cancelTime", "")))
         prof_id = booking.get("profile", "")
         prof_name = self._profile_mapping.get(prof_id, prof_id)
@@ -676,10 +633,9 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
         return None
 
-    def _retrieve_group_connections(self) -> dict:
+    def _retrieve_group_connections(self) -> tuple:
         group_services = {}
-        self._child_to_group = {}
-
+        child_to_group = {}
         try:
             url = (
                 "/rest/v1/data/status/conman/services/"
@@ -702,16 +658,16 @@ class MainWindow(QtWidgets.QMainWindow):
                     "type": "group",
                     "booking": {
                         "serviceId": group_id,
-                        "from": connection.get("from",""),
-                        "to": connection.get("to",""),
+                        "from": connection.get("from", ""),
+                        "to": connection.get("to", ""),
                         "allocationState": None,
                         "createdBy": "",
                         "lockedBy": ("GroupLocked" if gen.get("locked") else ""),
                         "isRecurrentInstance": False,
                         "timestamp": "",
                         "descriptor": {
-                            "label": desc.get("label",""),
-                            "desc": desc.get("desc","")
+                            "label": desc.get("label", ""),
+                            "desc": desc.get("desc", "")
                         },
                         "profile": "",
                         "auditHistory": [],
@@ -729,13 +685,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
                 children_map = spec.get("children", {})
                 for child_id in children_map.keys():
-                    self._child_to_group[child_id] = group_id
+                    child_to_group[child_id] = group_id
 
         except VideoIPathClientError:
-            self._child_to_group = {}
-            pass
-
-        return group_services
+            child_to_group = {}
+        return group_services, child_to_group
 
     def _addServiceToTable(self, svc_id: str, svc_data: dict):
         self.currentServices[svc_id] = svc_data
@@ -966,7 +920,9 @@ class GroupDetailDialog(QtWidgets.QDialog):
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
-
+    loop = QEventLoop(app)
+    asyncio.set_event_loop(loop)
+    
     # Load and apply Roboto globally
     roboto_font = load_custom_font()
     if roboto_font:
@@ -974,10 +930,12 @@ def main():
         app.setFont(font)
     else:
         print("Falling back to default system font.")
-
+    
     window = MainWindow()
     window.show()
-    sys.exit(app.exec())
+    
+    with loop:
+        loop.run_forever()
 
 if __name__ == "__main__":
     main()
