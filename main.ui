@@ -95,11 +95,11 @@
    </layout>
   </widget>
   <widget class="QDockWidget" name="dockWidgetFilters">
+   <property name="features">
+    <set>QDockWidget::NoDockWidgetFeatures</set>
+   </property>
    <property name="windowTitle">
     <string>Filters</string>
-   </property>
-   <property name="features">
-     <set>QDockWidget::NoDockWidgetFeatures</set>
    </property>
    <attribute name="dockWidgetArea">
     <number>1</number>
@@ -265,12 +265,9 @@
    <attribute name="toolBarBreak">
     <bool>false</bool>
    </attribute>
-   <addaction name="actionNew"/>
    <addaction name="actionOpen"/>
    <addaction name="actionSave"/>
    <addaction name="actionRefresh"/>
-   <addaction name="actionExport"/>
-   <addaction name="actionSettings"/>
   </widget>
   <widget class="QStatusBar" name="statusbar">
    <widget class="QWidget" name="statusContainer">
@@ -321,14 +318,14 @@
      </item>
      <item>
       <widget class="QLabel" name="labelUserInfo">
+       <property name="styleSheet">
+        <string>padding-left: 10px;</string>
+       </property>
        <property name="text">
         <string>User: N/A | Role: N/A</string>
        </property>
        <property name="alignment">
         <set>Qt::AlignVCenter</set>
-       </property>
-       <property name="styleSheet">
-        <string>padding-left: 10px;</string>
        </property>
       </widget>
      </item>
