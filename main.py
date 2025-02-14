@@ -335,69 +335,15 @@ class MainWindow(QtWidgets.QMainWindow):
         dlg.exec()
 
     async def refreshServicesAsync(self):
+        if not self.client:
+            QtWidgets.QMessageBox.information(
+                self, "Not Connected", "Not connected to a remote VideoIPath system."
+            )
+            return
         self.statusMsgLabel.setText("Refreshing services...")
-        loop = asyncio.get_running_loop()
         try:
-            # Run network calls concurrently in a thread executor
-            future_normal   = loop.run_in_executor(None, self.client.retrieve_services)
-            future_profiles = loop.run_in_executor(
-                None, lambda: self.client.get("/rest/v1/data/config/profiles/*/id,name,description,tags/**")
-            )
-            future_ep_local = loop.run_in_executor(
-                None, lambda: self.client.get("/rest/v1/data/config/network/nGraphElements/**")
-            )
-            future_ep_ext   = loop.run_in_executor(
-                None, lambda: self.client.get("/rest/v1/data/status/network/externalEndpoints/**")
-            )
-            future_group    = loop.run_in_executor(None, self._retrieve_group_connections)
-            
-            (normal_services, profiles_resp, resp_local, resp_ext, group_res) = await asyncio.gather(
-                future_normal, future_profiles, future_ep_local, future_ep_ext, future_group
-            )
-            group_services, child_to_group = group_res
-            
-            merged = {}
-            merged.update(normal_services)
-            merged.update(group_services)
-            for svc_id, svc_obj in normal_services.items():
-                if svc_id in child_to_group:
-                    svc_obj["groupParent"] = child_to_group[svc_id]
-            
-            used_profile_ids = set()
-            for svc_id, svc_data in merged.items():
-                booking = svc_data.get("booking", {})
-                pid = booking.get("profile", "")
-                if pid:
-                    used_profile_ids.add(pid)
-            
-            prof_data = profiles_resp.get("data", {}).get("config", {}).get("profiles", {})
-            profile_mapping = {pid: info.get("name", pid) for pid, info in prof_data.items()}
-            
-            endpoint_map = {}
-            try:
-                ngraph = resp_local.get("data", {}).get("config", {}).get("network", {}).get("nGraphElements", {})
-                for node_id, node_data in ngraph.items():
-                    val = node_data.get("value", {})
-                    label = val.get("descriptor", {}).get("label", "")
-                    endpoint_map[node_id] = label if label else node_id
-            except Exception:
-                pass
-            try:
-                ext_data = resp_ext.get("data", {}).get("status", {}).get("network", {}).get("externalEndpoints", {})
-                for ext_id, ext_val in ext_data.items():
-                    desc_obj = ext_val.get("descriptor", {})
-                    lbl = desc_obj.get("label") or ""
-                    endpoint_map[ext_id] = lbl if lbl else ext_id
-            except Exception:
-                pass
-            
-            result = {
-                "merged": merged,
-                "used_profile_ids": used_profile_ids,
-                "profile_mapping": profile_mapping,
-                "endpoint_map": endpoint_map,
-                "child_to_group": child_to_group,
-            }
+            responses = await self._fetchServicesData()
+            result = self._processServicesData(responses)
             self.onServicesRetrieved(result)
         except Exception as e:
             self.onServicesError(str(e))
@@ -405,6 +351,85 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusMsgLabel.setText("Services refreshed")
             await asyncio.sleep(3)
             self.statusMsgLabel.setText("")
+
+    async def _fetchServicesData(self) -> dict:
+        future_normal = self._run_api_call(self.client.retrieve_services)
+        future_profiles = self._run_api_call(lambda: self.client.get("/rest/v1/data/config/profiles/*/id,name,description,tags/**"))
+        future_ep_local = self._run_api_call(lambda: self.client.get("/rest/v1/data/config/network/nGraphElements/**"))
+        future_ep_ext = self._run_api_call(lambda: self.client.get("/rest/v1/data/status/network/externalEndpoints/**"))
+        future_group = self._run_api_call(self._retrieve_group_connections)
+        
+        normal_services, profiles_resp, resp_local, resp_ext, group_res = await asyncio.gather(
+            future_normal, future_profiles, future_ep_local, future_ep_ext, future_group
+        )
+        
+        return {
+            "normal_services": normal_services,
+            "profiles_resp": profiles_resp,
+            "resp_local": resp_local,
+            "resp_ext": resp_ext,
+            "group_res": group_res,
+        }
+
+    def _processServicesData(self, responses: dict) -> dict:
+        normal_services = responses["normal_services"]
+        profiles_resp = responses["profiles_resp"]
+        resp_local = responses["resp_local"]
+        resp_ext = responses["resp_ext"]
+        group_res = responses["group_res"]
+        group_services, child_to_group = group_res
+
+        merged = {}
+        merged.update(normal_services)
+        merged.update(group_services)
+        for svc_id, svc_obj in normal_services.items():
+            if svc_id in child_to_group:
+                svc_obj["groupParent"] = child_to_group[svc_id]
+
+        used_profile_ids = set()
+        for svc_data in merged.values():
+            booking = svc_data.get("booking", {})
+            pid = booking.get("profile", "")
+            if pid:
+                used_profile_ids.add(pid)
+
+        prof_data = profiles_resp.get("data", {}).get("config", {}).get("profiles", {})
+        profile_mapping = {pid: info.get("name", pid) for pid, info in prof_data.items()}
+
+        endpoint_map = {}
+        try:
+            ngraph = resp_local.get("data", {}).get("config", {}).get("network", {}).get("nGraphElements", {})
+            for node_id, node_data in ngraph.items():
+                val = node_data.get("value", {})
+                label = val.get("descriptor", {}).get("label", "")
+                endpoint_map[node_id] = label if label else node_id
+        except Exception:
+            pass
+        try:
+            ext_data = resp_ext.get("data", {}).get("status", {}).get("network", {}).get("externalEndpoints", {})
+            for ext_id, ext_val in ext_data.items():
+                desc_obj = ext_val.get("descriptor", {})
+                lbl = desc_obj.get("label") or ""
+                endpoint_map[ext_id] = lbl if lbl else ext_id
+        except Exception:
+            pass
+
+        return {
+            "merged": merged,
+            "used_profile_ids": used_profile_ids,
+            "profile_mapping": profile_mapping,
+            "endpoint_map": endpoint_map,
+            "child_to_group": child_to_group,
+        }
+
+    async def _run_api_call(self, func, *args, timeout=10, retries=2):
+        loop = asyncio.get_running_loop()
+        for attempt in range(retries):
+            try:
+                return await asyncio.wait_for(loop.run_in_executor(None, func, *args), timeout)
+            except Exception as e:
+                if attempt == retries - 1:
+                    raise e
 
     def onServicesRetrieved(self, result):
         merged = result["merged"]
