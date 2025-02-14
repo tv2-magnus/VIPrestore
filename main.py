@@ -100,6 +100,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.profileCheckBoxes = []
         self.currentServices = {}
 
+        # Create a dedicated ThreadPoolExecutor for blocking calls.
+        self.executor = ThreadPoolExecutor()
+
         # Build actions
         self.actionLogin = QtGui.QAction("Login", self)
         self.actionLogout = QtGui.QAction("Logout", self)
@@ -114,8 +117,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.actionAbout.triggered.connect(self.showAbout)
         self.actionSettings.triggered.connect(self.showSettings)
-        # IMPORTANT: Use the async refresh so messages don't overlap connection status.
-        self.actionRefresh.triggered.connect(self.refreshServicesAsync)
+
+        self.actionSaveSelectedServices = QtGui.QAction("Save Selected Services", self)
+        self.menuFile.addAction(self.actionSaveSelectedServices)
+        self.actionSaveSelectedServices.triggered.connect(self.saveSelectedServices)
+
+        # Allow multi-selection for saving
+        self.tableViewServices.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
 
         # Connection status
         self.updateConnectionStatus(False)
@@ -127,7 +135,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tableViewServices.setModel(self.filterProxy)
         self.tableViewServices.setSortingEnabled(True)
 
-        self.tableViewServices.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.tableViewServices.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tableViewServices.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.tableViewServices.clicked.connect(self.onServiceClicked)
 
@@ -222,8 +230,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.client = VideoIPathClient(server_url)
             loop = asyncio.get_running_loop()
             try:
-                await loop.run_in_executor(None, self.client.login, username, password)
-                session_info = await loop.run_in_executor(None, lambda: self.client.get("/api/_session"))
+                await loop.run_in_executor(self.executor, self.client.login, username, password)
+                session_info = await loop.run_in_executor(self.executor, lambda: self.client.get("/api/_session"))
                 user_data = session_info.get("userCtx", {})
                 username_disp = user_data.get("name", "unknown")
                 roles = user_data.get("roles", [])
@@ -279,6 +287,35 @@ class MainWindow(QtWidgets.QMainWindow):
             if w:
                 w.deleteLater()
         self.profileCheckBoxes.clear()
+
+    def saveSelectedServices(self):
+        # Get selected rows
+        indexes = self.tableViewServices.selectionModel().selectedRows()
+        if not indexes:
+            QtWidgets.QMessageBox.information(self, "No Selection", "Please select at least one service to save.")
+            return
+
+        # Gather full info for each selected service, excluding the "res" field.
+        services_to_save = {}
+        for index in indexes:
+            service_id = self.filterProxy.index(index.row(), 0).data()
+            service_data = self.currentServices.get(service_id)
+            if service_data:
+                service_copy = service_data.copy()
+                service_copy.pop("res", None)
+                services_to_save[service_id] = service_copy
+
+        # Open a file dialog to choose save location (using JSON)
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Services", "", "JSON Files (*.json)")
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(services_to_save, f, indent=2)
+            QtWidgets.QMessageBox.information(self, "Success", f"Saved {len(services_to_save)} service(s) to {file_path}.")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error Saving File", str(e))
 
     def editSystems(self):
         from systems_editor_dialog import SystemsEditorDialog
@@ -426,7 +463,7 @@ class MainWindow(QtWidgets.QMainWindow):
         loop = asyncio.get_running_loop()
         for attempt in range(retries):
             try:
-                return await asyncio.wait_for(loop.run_in_executor(None, func, *args), timeout)
+                return await asyncio.wait_for(loop.run_in_executor(self.executor, func, *args), timeout)
             except Exception as e:
                 if attempt == retries - 1:
                     raise e
@@ -852,12 +889,15 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self.updateServiceSelection)
 
     def onServiceClicked(self, index: QtCore.QModelIndex):
-        svc_id = self.filterProxy.index(index.row(), 0).data()
+        selected_indexes = self.tableViewServices.selectionModel().selectedRows()
+        if len(selected_indexes) != 1:
+            return
+        svc_id = self.filterProxy.index(selected_indexes[0].row(), 0).data()
         self.displayServiceDetails(svc_id)
 
     def onServiceSelectionChanged(self, selected, deselected):
         indexes = self.tableViewServices.selectionModel().selectedRows()
-        if indexes:
+        if len(indexes) == 1:
             row = indexes[0].row()
             svc_id = self.filterProxy.index(row, 0).data()
             self.displayServiceDetails(svc_id)
