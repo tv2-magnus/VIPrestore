@@ -3,11 +3,9 @@ import re
 import json
 import asyncio
 from datetime import datetime, timedelta
-from qasync import QEventLoop, asyncSlot
+from qasync import QEventLoop
 
 from PyQt6 import QtWidgets, uic, QtGui, QtCore
-from PyQt6.QtGui import QAction
-from PyQt6.QtCore import QModelIndex
 from vipclient import VideoIPathClient, VideoIPathClientError
 from login_dialog import LoginDialog
 
