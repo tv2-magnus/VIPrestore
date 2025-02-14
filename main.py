@@ -11,6 +11,10 @@ from login_dialog import LoginDialog
 
 from concurrent.futures import ThreadPoolExecutor
 
+import socket
+import ssl
+import urllib.parse
+
 def load_custom_font():
     font_id = QtGui.QFontDatabase.addApplicationFont("fonts/Roboto-Regular.ttf")
     if font_id == -1:
@@ -21,6 +25,21 @@ def load_custom_font():
     if families:
         return families[0]  # Use the first available font family
     return None
+
+def verify_ssl_cert(server_url: str) -> bool:
+    parsed = urllib.parse.urlparse(server_url)
+    hostname = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    context = ssl.create_default_context()
+    try:
+        with socket.create_connection((hostname, port), timeout=10) as sock:
+            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                # If no exception occurs, the certificate is valid.
+                return True
+    except ssl.SSLError:
+        return False
+    except Exception:
+        return False
 
 class ServicesFilterProxy(QtCore.QSortFilterProxyModel):
     def __init__(self, parent=None):
@@ -89,92 +108,88 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         uic.loadUi("main.ui", self)
-
+        
         self.setSplitterPlacement()
         
+        # Instance Variables
         self.client = None
         self._profile_mapping = {}
         self._endpoint_map = {}
         self.profileCheckBoxes = []
         self.currentServices = {}
-
-        # Create a dedicated ThreadPoolExecutor for blocking calls.
+        
+        # Executor for blocking calls
         self.executor = ThreadPoolExecutor()
-
-        # Build actions
+        
+        # Build Actions and Add to Menus
         self.actionLogin = QtGui.QAction("Login", self)
         self.actionLogout = QtGui.QAction("Logout", self)
         self.actionEditSystems = QtGui.QAction("Edit Systems", self)
+        self.actionSaveSelectedServices = QtGui.QAction("Save Selected Services", self)
+        
         self.menuFile.addAction(self.actionLogin)
         self.menuFile.addAction(self.actionLogout)
         self.menuFile.addAction(self.actionEditSystems)
+        self.menuFile.addAction(self.actionSaveSelectedServices)
+        
+        # Connect Action Signals
         self.actionLogin.triggered.connect(lambda: asyncio.create_task(self.doLogin()))
         self.actionRefresh.triggered.connect(lambda: asyncio.create_task(self.refreshServicesAsync()))
         self.actionLogout.triggered.connect(self.doLogout)
         self.actionEditSystems.triggered.connect(self.editSystems)
-
         self.actionAbout.triggered.connect(self.showAbout)
         self.actionSettings.triggered.connect(self.showSettings)
-
-        self.actionSaveSelectedServices = QtGui.QAction("Save Selected Services", self)
-        self.menuFile.addAction(self.actionSaveSelectedServices)
         self.actionSaveSelectedServices.triggered.connect(self.saveSelectedServices)
 
-        # Allow multi-selection for saving
+        # Configure Service View Table
         self.tableViewServices.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
-
-        # Connection status
-        self.updateConnectionStatus(False)
-
-        # Model & filter
+        self.tableViewServices.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tableViewServices.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tableViewServices.setAlternatingRowColors(True)
+        self.tableViewServices.setSortingEnabled(True)
+        self.tableViewServices.clicked.connect(self.onServiceClicked)
+        
+        # Setup Model and Filter for Services
         self.serviceModel = QtGui.QStandardItemModel(self)
         self.filterProxy = ServicesFilterProxy(self)
         self.filterProxy.setSourceModel(self.serviceModel)
         self.tableViewServices.setModel(self.filterProxy)
-        self.tableViewServices.setSortingEnabled(True)
-
-        self.tableViewServices.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.tableViewServices.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
-        self.tableViewServices.clicked.connect(self.onServiceClicked)
-
-        # Alternating row colors for service view
-        self.tableViewServices.setAlternatingRowColors(True)
+        self.tableViewServices.selectionModel().selectionChanged.connect(self.onServiceSelectionChanged)
+        
+        # Set StyleSheet for Service View
         self.setStyleSheet("""
             QTableView, QTableWidget {
                 background-color: #f5f5f5;
                 alternate-background-color: #e5e5e5;
-                color: black; /* Default text color */
+                color: black;
             }
             QTableView::item:selected, QTableWidget::item:selected {
                 background-color: #bdc8ff;
-                color: black; /* Selected item text color */
+                color: black;
             }
         """)
-
-        # Connect selection changed signal
-        self.tableViewServices.selectionModel().selectionChanged.connect(self.onServiceSelectionChanged)
-
-        # Filter widgets
+        
+        # Setup Filter Widgets
         self.lineEditSourceFilter.textChanged.connect(self.onSourceFilterChanged)
         self.lineEditDestinationFilter.textChanged.connect(self.onDestinationFilterChanged)
         self.dateTimeEditStart.dateTimeChanged.connect(self.onTimeFilterChanged)
         self.dateTimeEditEnd.dateTimeChanged.connect(self.onTimeFilterChanged)
         self.checkBoxEnableTimeFilter.stateChanged.connect(self.onTimeFilterChanged)
         self.buttonResetFilters.clicked.connect(self.onResetFilters)
-
-        # Profile filters
+        
+        # Configure Profile Filters Area
         self.scrollAreaProfilesFilters.setWidgetResizable(True)
         self.layoutProfiles = self.verticalLayoutProfilesList
         self.layoutProfiles.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-
-        # Default date/time = today's 00:00 -> 23:59
+        
+        # Set Default Date/Time for Filters (today's 00:00 -> 23:59)
         today = QtCore.QDate.currentDate()
         start_dt = QtCore.QDateTime(today, QtCore.QTime(0, 0, 0))
         end_dt = QtCore.QDateTime(today, QtCore.QTime(23, 59, 59))
         self.dateTimeEditStart.setDateTime(start_dt)
         self.dateTimeEditEnd.setDateTime(end_dt)
-
-        # Setup service details table
+        
+        # Configure Service Details Table
         self.tableWidgetServiceDetails.setColumnCount(2)
         self.tableWidgetServiceDetails.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tableWidgetServiceDetails.horizontalHeader().setStretchLastSection(True)
@@ -187,13 +202,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tableWidgetServiceDetails.verticalHeader().setSectionResizeMode(
             QtWidgets.QHeaderView.ResizeMode.ResizeToContents
         )
-        self.tableWidgetServiceDetails.setSelectionBehavior(
-            QtWidgets.QAbstractItemView.SelectionBehavior.SelectItems
-        )
+        self.tableWidgetServiceDetails.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectItems)
         self.tableWidgetServiceDetails.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.tableWidgetServiceDetails.cellClicked.connect(self._onDetailsCellClicked)
-
-        # Alternating row colors for details view
         self.tableWidgetServiceDetails.setAlternatingRowColors(True)
         self.tableWidgetServiceDetails.setStyleSheet("""
             QTableWidget {
@@ -201,16 +212,53 @@ class MainWindow(QtWidgets.QMainWindow):
                 alternate-background-color: #e5e5e5;
             }
         """)
-
-        # Session timer
+        
+        # Setup Session Timer
         self.sessionTimer = QtCore.QTimer(self)
         self.sessionTimer.setInterval(30000)
         self.sessionTimer.timeout.connect(self.checkSession)
         self.sessionTimer.start()
-
-        # Add a permanent status message label (right side) to avoid overlapping connection status.
+        
+        # --- Status Bar Setup ---
+        # Create a new status bar (ignoring any pre-defined in the .ui file)
+        status_bar = QtWidgets.QStatusBar(self)
+        self.setStatusBar(status_bar)
+        
+        # Add user role label (to be updated by updateUserStatus)
+        self.labelUserInfo = QtWidgets.QLabel("User: N/A | Role: N/A")
+        status_bar.addWidget(self.labelUserInfo)
+        
+        # Add service count label immediately to the right of the user role.
+        self.labelServiceCount = QtWidgets.QLabel("Total services: 0")
+        status_bar.addWidget(self.labelServiceCount)
+        self.labelServiceCount.setVisible(False)  # Hide when no connection
+        
+        # Create connection indicator (a small colored frame)
+        self.frameConnectionIndicator = QtWidgets.QFrame()
+        self.frameConnectionIndicator.setMinimumSize(QtCore.QSize(20, 20))
+        self.frameConnectionIndicator.setMaximumSize(QtCore.QSize(20, 20))
+        self.frameConnectionIndicator.setFrameShape(QtWidgets.QFrame.Shape.Box)
+        self.frameConnectionIndicator.setFrameShadow(QtWidgets.QFrame.Shadow.Raised)
+        self.frameConnectionIndicator.setStyleSheet("background-color: grey;")
+        status_bar.addWidget(self.frameConnectionIndicator)
+        
+        # Add connection status text
+        self.labelConnectionStatusText = QtWidgets.QLabel("No Connection")
+        status_bar.addWidget(self.labelConnectionStatusText)
+        
+        # Add loading spinner (using an animated GIF "spinner.gif")
+        self.loadingLabel = QtWidgets.QLabel("")
+        self.loadingMovie = QtGui.QMovie("spinner.gif")
+        self.loadingLabel.setMovie(self.loadingMovie)
+        status_bar.addWidget(self.loadingLabel)
+        self.loadingLabel.setVisible(False)
+        
+        # Add temporary status message label on the far right.
         self.statusMsgLabel = QtWidgets.QLabel("")
-        self.statusBar().addPermanentWidget(self.statusMsgLabel)
+        status_bar.addPermanentWidget(self.statusMsgLabel)
+
+        # Set Initial Connection Status
+        self.updateConnectionStatus(False)
 
     def setSplitterPlacement(self):
         splitter = self.findChild(QtWidgets.QSplitter, "splitterCentral")
@@ -218,16 +266,23 @@ class MainWindow(QtWidgets.QMainWindow):
             print("Warning: QSplitter with objectName 'splitterCentral' not found. Please check your .ui file.")
             return
         splitter.setSizes([400, 340])
-    
+
     async def doLogin(self):
         while True:
             dlg = LoginDialog()
             if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
                 break
             server_url, username, password = dlg.getCredentials()
+            self.server_url = server_url  # Store for later reference in updateConnectionStatus
             self.client = VideoIPathClient(server_url)
             loop = asyncio.get_running_loop()
             try:
+                # If using HTTPS, verify the SSL certificate.
+                if server_url.startswith("https://"):
+                    ssl_verified = await loop.run_in_executor(self.executor, verify_ssl_cert, server_url)
+                else:
+                    ssl_verified = False  # HTTP has no SSL verification.
+                
                 await loop.run_in_executor(self.executor, self.client.login, username, password)
                 session_info = await loop.run_in_executor(self.executor, lambda: self.client.get("/api/_session"))
                 user_data = session_info.get("userCtx", {})
@@ -243,8 +298,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.client = None
                 self.updateConnectionStatus(False)
                 continue
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Login Failed", str(e))
+                self.client = None
+                self.updateConnectionStatus(False)
+                continue
 
-            self.updateConnectionStatus(True)
+            self.updateConnectionStatus(True, ssl_verified)
             await self.refreshServicesAsync()
             break
 
@@ -322,15 +382,37 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def updateConnectionStatus(self, connected: bool, ssl_verified: bool = True):
         if connected:
-            if ssl_verified:
+            if hasattr(self, 'server_url'):
+                if self.server_url.startswith("https://"):
+                    if ssl_verified:
+                        self.frameConnectionIndicator.setStyleSheet("background-color: green;")
+                        self.labelConnectionStatusText.setText("Connected (HTTPS, valid SSL)")
+                    else:
+                        self.frameConnectionIndicator.setStyleSheet("background-color: orange;")
+                        self.labelConnectionStatusText.setText("Connected (HTTPS, invalid SSL)")
+                elif self.server_url.startswith("http://"):
+                    self.frameConnectionIndicator.setStyleSheet("background-color: red;")
+                    self.labelConnectionStatusText.setText("Connected (HTTP, not secure)")
+                else:
+                    self.frameConnectionIndicator.setStyleSheet("background-color: green;")
+                    self.labelConnectionStatusText.setText("Connected")
+            else:
                 self.frameConnectionIndicator.setStyleSheet("background-color: green;")
                 self.labelConnectionStatusText.setText("Connected")
-            else:
-                self.frameConnectionIndicator.setStyleSheet("background-color: yellow;")
-                self.labelConnectionStatusText.setText("Connected (SSL not verified)")
         else:
             self.frameConnectionIndicator.setStyleSheet("background-color: grey;")
             self.labelConnectionStatusText.setText("No Connection")
+        
+        self.actionLogout.setEnabled(connected)
+        self.actionSaveSelectedServices.setEnabled(connected)
+        
+        # Show or hide user role and service count based on connection state.
+        self.labelUserInfo.setVisible(connected)
+        self.labelServiceCount.setVisible(connected)
+        
+        # Always hide spinner when not loading.
+        self.loadingLabel.setVisible(False)
+
 
     def showAbout(self):
         dlg = QtWidgets.QDialog()
@@ -375,6 +457,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self, "Not Connected", "Not connected to a remote VideoIPath system."
             )
             return
+        self.startLoadingAnimation()  # Start spinner animation
         self.statusMsgLabel.setText("Refreshing services...")
         try:
             responses = await self._fetchServicesData()
@@ -383,6 +466,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             self.onServicesError(str(e))
         finally:
+            self.stopLoadingAnimation()  # Stop spinner animation
             self.statusMsgLabel.setText("Services refreshed")
             await asyncio.sleep(3)
             self.statusMsgLabel.setText("")
@@ -466,6 +550,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 if attempt == retries - 1:
                     raise e
 
+    def startLoadingAnimation(self):
+        if hasattr(self, "loadingMovie"):
+            self.loadingLabel.setVisible(True)
+            self.loadingMovie.start()
+
+    def stopLoadingAnimation(self):
+        if hasattr(self, "loadingMovie"):
+            self.loadingMovie.stop()
+            self.loadingLabel.setVisible(False)
+
     def onServicesRetrieved(self, result):
         merged = result["merged"]
         used_profile_ids = result["used_profile_ids"]
@@ -474,14 +568,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # Update the profile mapping so that profile names are used.
         self._profile_mapping = result["profile_mapping"]
 
-        # Create a new model and populate it.
         new_model = QtGui.QStandardItemModel(self)
         new_model.setHorizontalHeaderLabels(["Service ID", "Source", "Destination", "Start", "Profile"])
         
         for svc_id, svc_data in merged.items():
             booking = svc_data.get("booking", {})
-            desc = booking.get("descriptor", {})
-            label = desc.get("label", "")
+            label = booking.get("descriptor", {}).get("label", "")
             match = re.match(r'(.+?)\s*->\s*(.+)', label)
             if match:
                 src = match.group(1).strip()
@@ -498,7 +590,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
             pid = booking.get("profile", "")
-            # Use the profile name lookup from the updated mapping.
             prof_name = self._profile_mapping.get(pid, pid)
             row_items = [
                 QtGui.QStandardItem(str(booking.get("serviceId", svc_id))),
@@ -509,14 +600,15 @@ class MainWindow(QtWidgets.QMainWindow):
             ]
             new_model.appendRow(row_items)
         
-        # Update the proxy with the new model.
         self.filterProxy.setSourceModel(new_model)
         self.serviceModel = new_model
 
         self._rebuildProfileCheckboxes(used_profile_ids)
         self._setTableViewColumnWidths()
-        self.statusMsgLabel.setText("Services refreshed")
-        QtCore.QTimer.singleShot(3000, lambda: self.statusMsgLabel.setText(""))
+        
+        # Update the total services label.
+        total_services = len(merged)
+        self.labelServiceCount.setText(f"Total services: {total_services}")
 
     def onServicesError(self, error_msg):
         QtWidgets.QMessageBox.critical(self, "Error Refreshing Services", error_msg)
