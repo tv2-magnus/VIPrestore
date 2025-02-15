@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from qasync import QEventLoop
 
 from PyQt6 import QtWidgets, uic, QtGui, QtCore
+from PyQt6.QtCore import Qt
 from vipclient import VideoIPathClient, VideoIPathClientError
 from login_dialog import LoginDialog
 
@@ -104,6 +105,87 @@ class WorkerSignals(QtCore.QObject):
     finished = QtCore.pyqtSignal(dict)
     error = QtCore.pyqtSignal(str)
 
+class LoadServicesDialog(QtWidgets.QDialog):
+   def __init__(self, services, parent=None):
+       """
+       services: dict of modern-format services loaded from file.
+       Each service is expected to have in its serviceDefinition:
+       fromLabel, toLabel, and profileName.
+       """
+       super().__init__(parent)
+       self.setWindowTitle("Confirm Service Creation")
+       self.setModal(True)
+       self.services = services 
+       self.selected_services = set()
+
+       layout = QtWidgets.QVBoxLayout(self)
+
+       # Informational label
+       info_label = QtWidgets.QLabel("Review the services below and select the ones you wish to create:")
+       layout.addWidget(info_label)
+
+       # Create table with 4 columns: Select, Source, Destination, Profile
+       self.table = QtWidgets.QTableWidget(self)
+       self.table.setColumnCount(4)
+       self.table.setHorizontalHeaderLabels(["Select", "Source", "Destination", "Profile"])
+       self.table.setRowCount(len(services))
+       self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+
+       for row, (service_id, service) in enumerate(services.items()):
+           service_def = service.get("serviceDefinition", {})
+           source_label = service_def.get("fromLabel", service_def.get("from", "N/A"))
+           dest_label = service_def.get("toLabel", service_def.get("to", "N/A"))
+           profile_name = service_def.get("profileName", service_def.get("profileId", "N/A"))
+
+           # Column 0: Checkbox for selection
+           checkbox = QtWidgets.QCheckBox()
+           checkbox.setChecked(True)
+           checkbox.stateChanged.connect(self._update_selection)
+           self.table.setCellWidget(row, 0, checkbox)
+
+           # Column 1: Source label. Store service_id in user data
+           source_item = QtWidgets.QTableWidgetItem(source_label)
+           source_item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
+           source_item.setData(QtCore.Qt.ItemDataRole.UserRole, service_id)
+           self.table.setItem(row, 1, source_item)
+
+           # Column 2: Destination label
+           dest_item = QtWidgets.QTableWidgetItem(dest_label)
+           dest_item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
+           self.table.setItem(row, 2, dest_item)
+
+           # Column 3: Profile name
+           profile_item = QtWidgets.QTableWidgetItem(profile_name)
+           profile_item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
+           self.table.setItem(row, 3, profile_item)
+
+           # Initially add service_id to selection
+           self.selected_services.add(service_id)
+
+       self.table.horizontalHeader().setStretchLastSection(True)
+       self.table.resizeColumnsToContents()
+       layout.addWidget(self.table)
+
+       # Add OK and Cancel buttons
+       self.buttonBox = QtWidgets.QDialogButtonBox(
+           QtWidgets.QDialogButtonBox.StandardButton.Ok |
+           QtWidgets.QDialogButtonBox.StandardButton.Cancel
+       )
+       self.buttonBox.accepted.connect(self.accept)
+       self.buttonBox.rejected.connect(self.reject)
+       layout.addWidget(self.buttonBox)
+
+   def _update_selection(self):
+       """Refresh the set of selected services based on checkbox states."""
+       self.selected_services.clear()
+       for row in range(self.table.rowCount()):
+           checkbox = self.table.cellWidget(row, 0)
+           if checkbox and checkbox.isChecked():
+               source_item = self.table.item(row, 1)
+               if source_item:
+                   service_id = source_item.data(QtCore.Qt.ItemDataRole.UserRole)
+                   self.selected_services.add(service_id)
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -131,7 +213,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.menuFile.addAction(self.actionLogout)
         self.menuFile.addAction(self.actionEditSystems)
         self.menuFile.addAction(self.actionSaveSelectedServices)
-        
+
+        self.actionLoadServices = QtGui.QAction("Load Services", self)
+        self.menuFile.addAction(self.actionLoadServices)
+        self.actionLoadServices.triggered.connect(
+            lambda: asyncio.create_task(self.load_and_create_services())
+        )
+
         # Connect Action Signals
         self.actionLogin.triggered.connect(lambda: asyncio.create_task(self.doLogin()))
         self.actionRefresh.triggered.connect(lambda: asyncio.create_task(self.refreshServicesAsync()))
@@ -347,33 +435,232 @@ class MainWindow(QtWidgets.QMainWindow):
         self.profileCheckBoxes.clear()
 
     def saveSelectedServices(self):
-        # Get selected rows
         indexes = self.tableViewServices.selectionModel().selectedRows()
         if not indexes:
-            QtWidgets.QMessageBox.information(self, "No Selection", "Please select at least one service to save.")
+            QtWidgets.QMessageBox.information(
+                self,
+                "No Selection",
+                "Please select at least one service to save."
+            )
             return
 
-        # Gather full info for each selected service, excluding the "res" field.
-        services_to_save = {}
+        modern_services_to_save = {}
+        
         for index in indexes:
             service_id = self.filterProxy.index(index.row(), 0).data()
             service_data = self.currentServices.get(service_id)
+            
             if service_data:
-                service_copy = service_data.copy()
-                service_copy.pop("res", None)
-                services_to_save[service_id] = service_copy
+                booking = service_data.get("booking", {})
+                
+                # Parse timestamps
+                try:
+                    start_ts = int(booking.get("start", 0))
+                except:
+                    start_ts = 0
+                    
+                try:
+                    end_ts = int(booking.get("end", 0))
+                except:
+                    end_ts = 0
 
-        # Open a file dialog to choose save location (using JSON)
-        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Services", "", "JSON Files (*.json)")
+                # Extract device labels from descriptor label if formatted as "Source -> Destination"
+                descriptor = booking.get("descriptor", {})
+                descriptor_label = descriptor.get("label", "")
+                
+                if "->" in descriptor_label:
+                    parts = descriptor_label.split("->")
+                    from_label = parts[0].strip()
+                    to_label = parts[1].strip() if len(parts) > 1 else ""
+                else:
+                    from_label = booking.get("from", "")
+                    to_label = booking.get("to", "")
+
+                # Get profile id and then the profile name from the mapping
+                profile_id = booking.get("profile", "")
+                profile_name = self._profile_mapping.get(profile_id, profile_id) if profile_id else ""
+
+                modern_entry = {
+                    "scheduleInfo": {
+                        "startTimestamp": start_ts,
+                        "type": "once",
+                        "endTimestamp": end_ts
+                    },
+                    "locked": False,
+                    "serviceDefinition": {
+                        "from": booking.get("from", ""),
+                        "to": booking.get("to", ""),
+                        "fromLabel": from_label,  # new field: device label for source
+                        "toLabel": to_label,      # new field: device label for destination
+                        "allocationState": booking.get("allocationState", 0),
+                        "descriptor": {
+                            "desc": descriptor.get("desc", ""),
+                            "label": descriptor_label
+                        },
+                        "profileId": profile_id,
+                        "profileName": profile_name,  # new field: user-friendly profile name
+                        "tags": booking.get("tags", []),
+                        "type": "connection",
+                        "ctype": 2
+                    }
+                }
+                
+                modern_services_to_save[service_id] = modern_entry
+
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Modern Services",
+            "",
+            "JSON Files (*.json)"
+        )
+        
         if not file_path:
             return
 
         try:
             with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(services_to_save, f, indent=2)
-            QtWidgets.QMessageBox.information(self, "Success", f"Saved {len(services_to_save)} service(s) to {file_path}.")
+                json.dump(modern_services_to_save, f, indent=2)
+            
+            QtWidgets.QMessageBox.information(
+                self,
+                "Success",
+                f"Saved {len(modern_services_to_save)} service(s) to {file_path}."
+            )
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error Saving File", str(e))
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Error Saving File",
+                str(e)
+            )
+
+    def load_services_from_file(self) -> dict | None:
+        """
+        Opens a file dialog for the user to select a JSON file containing modern-format services.
+        Returns the loaded JSON as a dictionary or None if loading fails.
+        """
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Services File",
+            "",
+            "JSON Files (*.json)"
+        )
+
+        if not file_path:
+            return None
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Error Loading File",
+                f"Failed to load file: {e}"
+            )
+            return None
+
+    async def load_and_create_services(self):
+        """
+        Loads modern-format services from a file, presents them in a confirmation dialog,
+        and then creates the selected services via the modern API.
+        """
+        services = self.load_services_from_file()
+        if not services:
+            return
+
+        dlg = LoadServicesDialog(services, self)
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        selected_ids = dlg.selected_services
+        if not selected_ids:
+            QtWidgets.QMessageBox.information(
+                self,
+                "No Services Selected",
+                "No services were selected for creation."
+            )
+            return
+
+        await self.create_services_from_file(services, selected_ids)
+
+    async def create_services_from_file(self, services: dict, selected_ids: set):
+        """
+        Creates services using the modern API endpoint /api/setModernServices.
+        Reports to the user how many services were successfully created,
+        how many failed, and lists the IDs of those that failed.
+        """
+        # Build the list of entries from the selected services
+        entries = []
+        for service_id in selected_ids:
+            if service_id in services:
+                entries.append(services[service_id])
+
+        payload = {
+            "header": {"id": 1},
+            "data": {
+                "conflictStrategy": 0,
+                "bookingStrategy": 2,
+                "entries": entries
+            }
+        }
+
+        loop = asyncio.get_running_loop()
+        try:
+            response = await loop.run_in_executor(
+                self.executor,
+                lambda: self.client._request(
+                    "POST",
+                    f"{self.client.base_url}/api/setModernServices",
+                    headers={"Content-Type": "application/json"},
+                    json=payload
+                )
+            )
+            resp_json = response.json()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Service Creation Error",
+                f"Failed to create services: {e}"
+            )
+            return
+
+        # Parse the response
+        data = resp_json.get("data", {})
+        entriesLink = data.get("entriesLink", [])
+        bookresult = data.get("bookresult", {})
+        details = bookresult.get("details", {})
+        
+        success_count = 0
+        failed_services = []
+
+        # Iterate over each entry result
+        for link in entriesLink:
+            entry_id = link.get("id")
+            if link.get("error") is None and entry_id:
+                detail = details.get(entry_id, {})
+                # A status of 0 indicates success
+                if detail.get("status", 0) == 0:
+                    success_count += 1
+                else:
+                    failed_services.append(entry_id)
+            else:
+                failed_services.append(entry_id if entry_id else "Unknown")
+
+        total = len(entriesLink)
+        failure_count = total - success_count
+        
+        msg = f"Successfully created {success_count} service(s).\n"
+        if failure_count > 0:
+            msg += f"Failed to create {failure_count} service(s): {', '.join(failed_services)}"
+        else:
+            msg += "All services were created successfully."
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "Service Creation Results",
+            msg
+        )
 
     def editSystems(self):
         from systems_editor_dialog import SystemsEditorDialog
