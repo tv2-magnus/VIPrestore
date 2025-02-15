@@ -16,6 +16,7 @@ import socket
 import ssl
 import urllib.parse
 
+# This is a test comment
 def load_custom_font():
     font_id = QtGui.QFontDatabase.addApplicationFont("fonts/Roboto-Regular.ttf")
     if font_id == -1:
@@ -100,7 +101,7 @@ class ServicesFilterProxy(QtCore.QSortFilterProxyModel):
 
         return True
 
-# Worker signals for asynchronous refresh.
+
 class WorkerSignals(QtCore.QObject):
     finished = QtCore.pyqtSignal(dict)
     error = QtCore.pyqtSignal(str)
@@ -256,7 +257,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 color: black;
             }
         """)
-        
+
         # Setup Filter Widgets
         self.lineEditSourceFilter.textChanged.connect(self.onSourceFilterChanged)
         self.lineEditDestinationFilter.textChanged.connect(self.onDestinationFilterChanged)
