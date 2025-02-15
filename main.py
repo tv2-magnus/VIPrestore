@@ -22,16 +22,43 @@ def resource_path(relative_path):
     base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
     return os.path.join(base_path, relative_path)
 
-def load_custom_font():
-    font_path = resource_path("fonts/Roboto-Regular.ttf")
-    font_id = QtGui.QFontDatabase.addApplicationFont(font_path)
-    if font_id == -1:
-        print("Failed to load Roboto font!")
-        return None
-    families = QtGui.QFontDatabase.applicationFontFamilies(font_id)
-    if families:
-        return families[0]
-    return None
+def load_custom_fonts():
+    """Load all required Roboto font variants and return a dict of font families."""
+    from PyQt6 import QtGui
+    import os
+    
+    font_files = {
+        'regular': 'Roboto-Regular.ttf',
+        'bold': 'Roboto-Bold.ttf',
+    }
+
+    loaded_fonts = {}
+    fonts_dir = resource_path("fonts")
+    
+    # Debug information
+    print(f"Looking for fonts in: {fonts_dir}")
+    print(f"Full path to Regular: {os.path.join(fonts_dir, 'Roboto-Regular.ttf')}")
+    print(f"Full path to Bold: {os.path.join(fonts_dir, 'Roboto-Bold.ttf')}")
+
+    for variant, filename in font_files.items():
+        font_path = os.path.join(fonts_dir, filename)
+        if not os.path.exists(font_path):
+            print(f"Warning: Font file not found: {font_path}")
+            continue
+
+        font_id = QtGui.QFontDatabase.addApplicationFont(font_path)
+        if font_id == -1:
+            print(f"Failed to load font: {filename}")
+            continue
+
+        families = QtGui.QFontDatabase.applicationFontFamilies(font_id)
+        if families:
+            loaded_fonts[variant] = families[0]
+            print(f"Successfully loaded font: {filename}")
+        else:
+            print(f"No font families found for: {filename}")
+
+    return loaded_fonts
 
 def verify_ssl_cert(server_url: str) -> bool:
     parsed = urllib.parse.urlparse(server_url)
@@ -223,6 +250,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         uic.loadUi("main.ui", self)
+
+        # Add this right after super().__init__()
+        self.bold_font_family = None  # Will be set from main()
         
         # Clean up menu bar: create a new organized menu bar for improved UX
         menubar = self.menuBar()
@@ -317,20 +347,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.filterProxy.setSourceModel(self.serviceModel)
         self.tableViewServices.setModel(self.filterProxy)
         self.tableViewServices.selectionModel().selectionChanged.connect(self.onServiceSelectionChanged)
-        
-        # Set StyleSheet for Service View
-        self.setStyleSheet("""
-            QTableView, QTableWidget {
-                background-color: #f5f5f5;
-                alternate-background-color: #e5e5e5;
-                color: black;
-            }
-            QTableView::item:selected, QTableWidget::item:selected {
-                background-color: #bdc8ff;
-                color: black;
-            }
-        """)
-        
+
         # Setup Filter Widgets
         self.lineEditSourceFilter.textChanged.connect(self.onSourceFilterChanged)
         self.lineEditDestinationFilter.textChanged.connect(self.onDestinationFilterChanged)
@@ -368,13 +385,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tableWidgetServiceDetails.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.tableWidgetServiceDetails.cellClicked.connect(self._onDetailsCellClicked)
         self.tableWidgetServiceDetails.setAlternatingRowColors(True)
-        self.tableWidgetServiceDetails.setStyleSheet("""
-            QTableWidget {
-                background-color: #f5f5f5;
-                alternate-background-color: #e5e5e5;
-            }
-        """)
-        
+
         # Setup Session Timer
         self.sessionTimer = QtCore.QTimer(self)
         self.sessionTimer.setInterval(30000)
@@ -419,6 +430,40 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Set Initial Connection Status
         self.updateConnectionStatus(False)
+
+    def update_table_fonts(self):
+        """Update table fonts explicitly"""
+        if self.bold_font_family:
+            print(f"Updating table fonts to: {self.bold_font_family}")  # Debug print
+            bold_font = QtGui.QFont(self.bold_font_family, 10, QtGui.QFont.Weight.Bold)
+            self.tableViewServices.setFont(bold_font)
+            self.tableWidgetServiceDetails.setFont(bold_font)
+
+    def set_bold_font_family(self, font_family):
+        """Set the bold font family and update all table styles"""
+        print(f"Setting bold font family to: {font_family}")
+        self.bold_font_family = font_family
+        if self.bold_font_family:
+            table_style = f"""
+                QTableView, QTableWidget {{
+                    background-color: #dddddd;
+                    alternate-background-color: #cccccc;
+                    color: black;
+                    font-family: "{self.bold_font_family}";
+                    font-weight: bold;
+                }}
+                QTableView::item:selected, QTableWidget::item:selected {{
+                    background-color: #a1aaff;
+                    color: black;
+                }}
+            """
+            print("Applying table style with bold font")
+            self.setStyleSheet(table_style)
+            self.tableWidgetServiceDetails.setStyleSheet(table_style)
+            
+            # Force update of table fonts
+            self.tableViewServices.setFont(QtGui.QFont(self.bold_font_family, 10, QtGui.QFont.Weight.Bold))
+            self.tableWidgetServiceDetails.setFont(QtGui.QFont(self.bold_font_family, 10, QtGui.QFont.Weight.Bold))
 
     def setSplitterPlacement(self):
         splitter = self.findChild(QtWidgets.QSplitter, "splitterCentral")
@@ -983,6 +1028,8 @@ class MainWindow(QtWidgets.QMainWindow):
         total_services = len([svc for svc in merged.values() if svc.get("type", "") != "group"])
         self.labelServiceCount.setText(f"Total services: {total_services}")
 
+        self.update_table_fonts()
+
     def onServicesError(self, error_msg):
         QtWidgets.QMessageBox.critical(self, "Error Refreshing Services", error_msg)
         self.statusMsgLabel.setText("Error refreshing services")
@@ -1452,20 +1499,29 @@ class GroupDetailDialog(QtWidgets.QDialog):
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
-    # Set window icon using your logo file
     app.setWindowIcon(QtGui.QIcon(resource_path("logo.ico")))
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
     
-    roboto_font = load_custom_font()
-    if roboto_font:
-        font = QtGui.QFont(roboto_font, 10)
-        app.setFont(font)
+    # Load fonts
+    loaded_fonts = load_custom_fonts()
+    print(f"Loaded fonts: {loaded_fonts}")  # Debug print
+    
+    if 'regular' in loaded_fonts:
+        print(f"Setting regular font: {loaded_fonts['regular']}")  # Debug print
+        default_font = QtGui.QFont(loaded_fonts['regular'], 10)
+        app.setFont(default_font)
     else:
         print("Falling back to default system font.")
     
     window = MainWindow()
-    window.setWindowIcon(QtGui.QIcon(resource_path("logo.ico")))  # Ensure main window gets the icon
+    
+    # Apply bold font to tables if available
+    if 'bold' in loaded_fonts:
+        print(f"Applying bold font to tables: {loaded_fonts['bold']}")  # Debug print
+        window.set_bold_font_family(loaded_fonts['bold'])
+    
+    window.setWindowIcon(QtGui.QIcon(resource_path("logo.ico")))
     window.show()
     
     with loop:
