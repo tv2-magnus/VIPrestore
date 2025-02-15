@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from qasync import QEventLoop
 
 from PyQt6 import QtWidgets, uic, QtGui, QtCore
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSize
 from vipclient import VideoIPathClient, VideoIPathClientError
 from login_dialog import LoginDialog
 
@@ -21,6 +21,60 @@ def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
     return os.path.join(base_path, relative_path)
+
+def create_app_icon():
+    """Creates a QIcon with multiple resolutions for the application."""
+    icon = QtGui.QIcon()
+    icon_sizes = [16, 32, 48, 256]
+    
+    # For Linux/Wayland, try loading from standard system locations first
+    if sys.platform.startswith('linux'):
+        # Try XDG standard locations
+        xdg_dirs = [
+            os.path.expanduser('~/.local/share/icons'),
+            '/usr/local/share/icons',
+            '/usr/share/icons'
+        ]
+        
+        for directory in xdg_dirs:
+            icon_path = os.path.join(directory, 'hicolor/256x256/apps/viprestore.png')
+            if os.path.exists(icon_path):
+                return QtGui.QIcon(icon_path)
+    
+    # Try loading from combined icon first
+    combined_path = resource_path(os.path.join("logos", "viprestore.ico"))
+    if os.path.exists(combined_path):
+        return QtGui.QIcon(combined_path)
+    
+    # Fallback to individual size icons
+    for size in icon_sizes:
+        # Try .ico files first
+        icon_path = resource_path(os.path.join("logos", f"viprestore_icon_{size}.ico"))
+        if os.path.exists(icon_path):
+            icon.addFile(icon_path, QSize(size, size))
+        else:
+            # Try .png files as fallback
+            png_path = resource_path(os.path.join("logos", f"viprestore_icon_{size}.png"))
+            if os.path.exists(png_path):
+                icon.addFile(png_path, QSize(size, size))
+    
+    return icon
+
+def set_app_icon(app, window):
+    """Sets the application icon for both the app and main window."""
+    icon = create_app_icon()
+    app.setWindowIcon(icon)
+    window.setWindowIcon(icon)
+    
+    # Set desktop file name for Linux/Wayland
+    if sys.platform.startswith('linux'):
+        app.setDesktopFileName('viprestore.desktop')
+    
+    # On Windows, set the taskbar icon
+    elif sys.platform == 'win32':
+        import ctypes
+        myappid = 'mycompany.viprestore.client.1.0'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
 def load_custom_fonts():
     """Load all required Roboto font variants and return a dict of font families."""
@@ -1499,7 +1553,6 @@ class GroupDetailDialog(QtWidgets.QDialog):
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
-    app.setWindowIcon(QtGui.QIcon(resource_path("logo.ico")))
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
     
@@ -1521,7 +1574,8 @@ def main():
         print(f"Applying bold font to tables: {loaded_fonts['bold']}")  # Debug print
         window.set_bold_font_family(loaded_fonts['bold'])
     
-    window.setWindowIcon(QtGui.QIcon(resource_path("logo.ico")))
+    # Set application and window icons
+    set_app_icon(app, window)
     window.show()
     
     with loop:
