@@ -16,7 +16,6 @@ import socket
 import ssl
 import urllib.parse
 
-# This is a test comment
 def load_custom_font():
     font_id = QtGui.QFontDatabase.addApplicationFont("fonts/Roboto-Regular.ttf")
     if font_id == -1:
@@ -50,57 +49,84 @@ class ServicesFilterProxy(QtCore.QSortFilterProxyModel):
         self.destination_filter = ""
         self.start_range = (None, None)
         self.active_profiles = set()
-
+    
     def setSourceFilterText(self, text):
-        self.source_filter = text.lower()
+        self.source_filter = text
         self.invalidateFilter()
-
+    
     def setDestinationFilterText(self, text):
-        self.destination_filter = text.lower()
+        self.destination_filter = text
         self.invalidateFilter()
-
+    
     def setStartRange(self, start_dt, end_dt):
         self.start_range = (start_dt, end_dt)
         self.invalidateFilter()
-
+    
     def setActiveProfiles(self, profile_names):
         self.active_profiles = set(profile_names)
         self.invalidateFilter()
 
+    def evaluate_filter(self, text, filter_str):
+        """
+        Evaluate whether 'text' (already lower case) matches the filter_str.
+        Supports uppercase "OR" and "AND" as operators, even if not surrounded by spaces.
+        If no operator is detected, the filter is treated as a literal substring.
+        """
+        filter_str = filter_str.strip()
+        if not filter_str:
+            return True
+        # Check for OR operator using word boundaries.
+        if re.search(r'\bOR\b', filter_str):
+            tokens = re.split(r'\bOR\b', filter_str)
+            return any(token.strip().lower() in text for token in tokens if token.strip())
+        # Check for AND operator using word boundaries.
+        elif re.search(r'\bAND\b', filter_str):
+            tokens = re.split(r'\bAND\b', filter_str)
+            return all(token.strip().lower() in text for token in tokens if token.strip())
+        else:
+            return filter_str.lower() in text
+
     def filterAcceptsRow(self, source_row, source_parent):
         model = self.sourceModel()
-        idx_source = model.index(source_row, 1, source_parent)  # Source col
-        idx_dest   = model.index(source_row, 2, source_parent)  # Destination col
-        idx_start  = model.index(source_row, 3, source_parent)  # Start col
-        idx_prof   = model.index(source_row, 4, source_parent)  # Profile col
-
+        # Adjusted column indices based on the current order:
+        # 0: Service ID, 1: Source, 2: Destination, 3: Profile, 4: Created By, 5: Start
+        idx_source = model.index(source_row, 1, source_parent)
+        idx_dest   = model.index(source_row, 2, source_parent)
+        idx_start  = model.index(source_row, 5, source_parent)
+        idx_prof   = model.index(source_row, 3, source_parent)
+    
         source_text = (model.data(idx_source) or "").lower()
         dest_text   = (model.data(idx_dest)   or "").lower()
         start_text  = (model.data(idx_start)  or "")
         profile_txt = (model.data(idx_prof)   or "")
-
-        # 1) Source filter
-        if self.source_filter not in source_text:
+    
+        if not self.evaluate_filter(source_text, self.source_filter):
             return False
-
-        # 2) Destination filter
-        if self.destination_filter not in dest_text:
+        if not self.evaluate_filter(dest_text, self.destination_filter):
             return False
-
-        # 3) Time range filter
+    
+        # Time range filter
         if start_text:
-            dt_val = QtCore.QDateTime.fromString(start_text, "yyyy-MM-dd HH:mm:ss")
+            dt_val = QtCore.QDateTime.fromString(start_text, "dd-MM-yyyy - HH:mm:ss")
             if self.start_range[0] and dt_val < self.start_range[0]:
                 return False
             if self.start_range[1] and dt_val > self.start_range[1]:
                 return False
-
-        # 4) Profile filter
+    
+        # Profile filter
         if self.active_profiles and profile_txt not in self.active_profiles:
             return False
-
+    
         return True
-
+    
+    def lessThan(self, left, right):
+        # Use the raw timestamp for sorting the Start column (index 5).
+        if left.column() == 5:
+            left_data = self.sourceModel().data(left, QtCore.Qt.ItemDataRole.UserRole)
+            right_data = self.sourceModel().data(right, QtCore.Qt.ItemDataRole.UserRole)
+            if left_data is not None and right_data is not None:
+                return left_data < right_data
+        return super().lessThan(left, right)
 
 class WorkerSignals(QtCore.QObject):
     finished = QtCore.pyqtSignal(dict)
@@ -192,6 +218,73 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         uic.loadUi("main.ui", self)
         
+        # Clean up menu bar: create a new organized menu bar for improved UX
+        menubar = self.menuBar()
+        menubar.clear()
+        
+        # Create menus
+        self.menuFile = menubar.addMenu("File")
+        self.menuTools = menubar.addMenu("Tools")
+        self.menuHelp = menubar.addMenu("Help")
+        
+        # Create actions with keyboard shortcuts
+        self.actionLogin = QtGui.QAction("Login", self)
+        self.actionLogin.setShortcut("Ctrl+L")
+        
+        self.actionLogout = QtGui.QAction("Logout", self)
+        self.actionLogout.setShortcut("Ctrl+Shift+L")
+        
+        self.actionLoadServices = QtGui.QAction("Load Services", self)
+        self.actionLoadServices.setShortcut("Ctrl+O")
+        
+        self.actionSaveSelectedServices = QtGui.QAction("Save Selected Services", self)
+        self.actionSaveSelectedServices.setShortcut("Ctrl+S")
+        
+        self.actionExit = QtGui.QAction("Exit", self)
+        self.actionExit.setShortcut("Ctrl+Q")
+        
+        self.actionRefresh = QtGui.QAction("Refresh Services", self)
+        self.actionRefresh.setShortcut("F5")
+        
+        self.actionEditSystems = QtGui.QAction("Edit Systems", self)
+        self.actionEditSystems.setShortcut("Ctrl+E")
+        
+        self.actionAbout = QtGui.QAction("About", self)
+        self.actionAbout.setShortcut("F1")
+        
+        self.actionSettings = QtGui.QAction("Settings", self)
+        self.actionSettings.setShortcut("Ctrl+,")
+        
+        # Add actions to File menu with grouping separators
+        self.menuFile.addAction(self.actionLogin)
+        self.menuFile.addAction(self.actionLogout)
+        self.menuFile.addSeparator()
+        self.menuFile.addAction(self.actionLoadServices)
+        self.menuFile.addAction(self.actionSaveSelectedServices)
+        self.menuFile.addSeparator()
+        self.menuFile.addAction(self.actionExit)
+        
+        # Add actions to Tools menu (with a separator between groups)
+        self.menuTools.addAction(self.actionRefresh)
+        self.menuTools.addSeparator()
+        self.menuTools.addAction(self.actionEditSystems)
+        
+        # Add actions to Help menu with a separator
+        self.menuHelp.addAction(self.actionAbout)
+        self.menuHelp.addSeparator()
+        self.menuHelp.addAction(self.actionSettings)
+        
+        # Connect Action Signals
+        self.actionLogin.triggered.connect(lambda: asyncio.create_task(self.doLogin()))
+        self.actionLogout.triggered.connect(self.doLogout)
+        self.actionLoadServices.triggered.connect(lambda: asyncio.create_task(self.load_and_create_services()))
+        self.actionSaveSelectedServices.triggered.connect(self.saveSelectedServices)
+        self.actionExit.triggered.connect(self.close)
+        self.actionRefresh.triggered.connect(lambda: asyncio.create_task(self.refreshServicesAsync()))
+        self.actionEditSystems.triggered.connect(self.editSystems)
+        self.actionAbout.triggered.connect(self.showAbout)
+        self.actionSettings.triggered.connect(self.showSettings)
+        
         self.setSplitterPlacement()
         
         # Instance Variables
@@ -204,32 +297,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Executor for blocking calls
         self.executor = ThreadPoolExecutor()
         
-        # Build Actions and Add to Menus
-        self.actionLogin = QtGui.QAction("Login", self)
-        self.actionLogout = QtGui.QAction("Logout", self)
-        self.actionEditSystems = QtGui.QAction("Edit Systems", self)
-        self.actionSaveSelectedServices = QtGui.QAction("Save Selected Services", self)
-        
-        self.menuFile.addAction(self.actionLogin)
-        self.menuFile.addAction(self.actionLogout)
-        self.menuFile.addAction(self.actionEditSystems)
-        self.menuFile.addAction(self.actionSaveSelectedServices)
-
-        self.actionLoadServices = QtGui.QAction("Load Services", self)
-        self.menuFile.addAction(self.actionLoadServices)
-        self.actionLoadServices.triggered.connect(
-            lambda: asyncio.create_task(self.load_and_create_services())
-        )
-
-        # Connect Action Signals
-        self.actionLogin.triggered.connect(lambda: asyncio.create_task(self.doLogin()))
-        self.actionRefresh.triggered.connect(lambda: asyncio.create_task(self.refreshServicesAsync()))
-        self.actionLogout.triggered.connect(self.doLogout)
-        self.actionEditSystems.triggered.connect(self.editSystems)
-        self.actionAbout.triggered.connect(self.showAbout)
-        self.actionSettings.triggered.connect(self.showSettings)
-        self.actionSaveSelectedServices.triggered.connect(self.saveSelectedServices)
-
         # Configure Service View Table
         self.tableViewServices.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tableViewServices.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -257,7 +324,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 color: black;
             }
         """)
-
+        
         # Setup Filter Widgets
         self.lineEditSourceFilter.textChanged.connect(self.onSourceFilterChanged)
         self.lineEditDestinationFilter.textChanged.connect(self.onDestinationFilterChanged)
@@ -309,20 +376,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sessionTimer.start()
         
         # --- Status Bar Setup ---
-        # Create a new status bar (ignoring any pre-defined in the .ui file)
         status_bar = QtWidgets.QStatusBar(self)
         self.setStatusBar(status_bar)
-        
-        # Add user role label (to be updated by updateUserStatus)
-        self.labelUserInfo = QtWidgets.QLabel("User: N/A | Role: N/A")
-        status_bar.addWidget(self.labelUserInfo)
-        
-        # Add service count label immediately to the right of the user role.
-        self.labelServiceCount = QtWidgets.QLabel("Total services: 0")
-        status_bar.addWidget(self.labelServiceCount)
-        self.labelServiceCount.setVisible(False)  # Hide when no connection
-        
-        # Create connection indicator (a small colored frame)
+
+        # Connection state: indicator and text
         self.frameConnectionIndicator = QtWidgets.QFrame()
         self.frameConnectionIndicator.setMinimumSize(QtCore.QSize(20, 20))
         self.frameConnectionIndicator.setMaximumSize(QtCore.QSize(20, 20))
@@ -330,19 +387,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self.frameConnectionIndicator.setFrameShadow(QtWidgets.QFrame.Shadow.Raised)
         self.frameConnectionIndicator.setStyleSheet("background-color: grey;")
         status_bar.addWidget(self.frameConnectionIndicator)
-        
-        # Add connection status text
+
         self.labelConnectionStatusText = QtWidgets.QLabel("No Connection")
         status_bar.addWidget(self.labelConnectionStatusText)
-        
-        # Add loading spinner (using an animated GIF "spinner.gif")
+
+        # Service count
+        self.labelServiceCount = QtWidgets.QLabel("Total services: 0")
+        status_bar.addWidget(self.labelServiceCount)
+        self.labelServiceCount.setVisible(False)  # Hide when no connection
+
+        # User info (name and role)
+        self.labelUserInfo = QtWidgets.QLabel("User: N/A | Role: N/A")
+        status_bar.addWidget(self.labelUserInfo)
+
+        # Loading spinner
         self.loadingLabel = QtWidgets.QLabel("")
         self.loadingMovie = QtGui.QMovie("spinner.gif")
         self.loadingLabel.setMovie(self.loadingMovie)
         status_bar.addWidget(self.loadingLabel)
         self.loadingLabel.setVisible(False)
-        
-        # Add temporary status message label on the far right.
+
+        # Temporary status message on the far right
         self.statusMsgLabel = QtWidgets.QLabel("")
         status_bar.addPermanentWidget(self.statusMsgLabel)
 
@@ -398,9 +463,7 @@ class MainWindow(QtWidgets.QMainWindow):
             break
 
     def updateUserStatus(self, text):
-        label_user_info = self.findChild(QtWidgets.QLabel, "labelUserInfo")
-        if label_user_info:
-            label_user_info.setText(text)
+        self.labelUserInfo.setText(text)
 
     def doLogout(self):
         if self.client:
@@ -856,10 +919,14 @@ class MainWindow(QtWidgets.QMainWindow):
         # Update the profile mapping so that profile names are used.
         self._profile_mapping = result["profile_mapping"]
 
+        # Create a model with six columns in the specified order.
         new_model = QtGui.QStandardItemModel(self)
-        new_model.setHorizontalHeaderLabels(["Service ID", "Source", "Destination", "Start", "Profile"])
+        new_model.setHorizontalHeaderLabels(["Service ID", "Source", "Destination", "Profile", "Created By", "Start"])
         
+        # Only add non-group based services to the table
         for svc_id, svc_data in merged.items():
+            if svc_data.get("type", "") == "group":
+                continue  # Skip group-based connections
             booking = svc_data.get("booking", {})
             label = booking.get("descriptor", {}).get("label", "")
             match = re.match(r'(.+?)\s*->\s*(.+)', label)
@@ -869,22 +936,34 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 src = label
                 dst = ""
+            pid = booking.get("profile", "")
+            prof_name = self._profile_mapping.get(pid, pid)
+            created_by = booking.get("createdBy", "")
+            
+            # Process start time: store display text and raw timestamp for sorting
             start_ts = booking.get("start")
             start_str = ""
+            timestamp_value = None
             if start_ts:
                 try:
                     dt_val = datetime.fromtimestamp(int(start_ts) / 1000)
-                    start_str = dt_val.strftime("%Y-%m-%d %H:%M:%S")
+                    start_str = dt_val.strftime("%d-%m-%Y - %H:%M:%S")
+                    timestamp_value = int(start_ts)
                 except Exception:
                     pass
-            pid = booking.get("profile", "")
-            prof_name = self._profile_mapping.get(pid, pid)
+            
+            # Create QStandardItem for the Start column and store the raw timestamp in UserRole.
+            start_item = QtGui.QStandardItem(start_str)
+            if timestamp_value is not None:
+                start_item.setData(timestamp_value, QtCore.Qt.ItemDataRole.UserRole)
+            
             row_items = [
                 QtGui.QStandardItem(str(booking.get("serviceId", svc_id))),
                 QtGui.QStandardItem(src),
                 QtGui.QStandardItem(dst),
-                QtGui.QStandardItem(start_str),
                 QtGui.QStandardItem(str(prof_name)),
+                QtGui.QStandardItem(created_by),
+                start_item,
             ]
             new_model.appendRow(row_items)
         
@@ -894,8 +973,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rebuildProfileCheckboxes(used_profile_ids)
         self._setTableViewColumnWidths()
         
-        # Update the total services label.
-        total_services = len(merged)
+        # Update the total services label to count only non-group services
+        total_services = len([svc for svc in merged.values() if svc.get("type", "") != "group"])
         self.labelServiceCount.setText(f"Total services: {total_services}")
 
     def onServicesError(self, error_msg):
@@ -1012,13 +1091,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _setTableViewColumnWidths(self):
         header = self.tableViewServices.horizontalHeader()
-        for col in range(self.serviceModel.columnCount()):
-            header.setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeMode.Fixed)
-        self.tableViewServices.setColumnWidth(0, 100)
-        self.tableViewServices.setColumnWidth(1, 250)
-        self.tableViewServices.setColumnWidth(2, 250)
-        self.tableViewServices.setColumnWidth(3, 150)
-        self.tableViewServices.setColumnWidth(4, 150)
+        # Set all columns except the last one (Start) to Interactive.
+        for col in range(self.serviceModel.columnCount() - 1):
+            header.setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        # Set the last column ("Start") to stretch.
+        header.setSectionResizeMode(self.serviceModel.columnCount() - 1, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.tableViewServices.setColumnWidth(0, 90)   # Service ID
+        self.tableViewServices.setColumnWidth(1, 240)   # Source
+        self.tableViewServices.setColumnWidth(2, 240)   # Destination
+        self.tableViewServices.setColumnWidth(3, 100)   # Profile
+        self.tableViewServices.setColumnWidth(4, 120)   # Created By
+        #self.tableViewServices.setColumnWidth(5, 150)   # Start
 
     def _fetchSingleGroupConnection(self, group_id: str) -> dict | None:
         try:
