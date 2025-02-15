@@ -1,4 +1,5 @@
 import sys
+import os
 import re
 import json
 import asyncio
@@ -16,15 +17,20 @@ import socket
 import ssl
 import urllib.parse
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
+    return os.path.join(base_path, relative_path)
+
 def load_custom_font():
-    font_id = QtGui.QFontDatabase.addApplicationFont("fonts/Roboto-Regular.ttf")
+    font_path = resource_path("fonts/Roboto-Regular.ttf")
+    font_id = QtGui.QFontDatabase.addApplicationFont(font_path)
     if font_id == -1:
         print("Failed to load Roboto font!")
         return None
-    
     families = QtGui.QFontDatabase.applicationFontFamilies(font_id)
     if families:
-        return families[0]  # Use the first available font family
+        return families[0]
     return None
 
 def verify_ssl_cert(server_url: str) -> bool:
@@ -1446,18 +1452,20 @@ class GroupDetailDialog(QtWidgets.QDialog):
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
+    # Set window icon using your logo file
+    app.setWindowIcon(QtGui.QIcon(resource_path("logo.ico")))
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
     
-    # Load and apply Roboto globally
     roboto_font = load_custom_font()
     if roboto_font:
-        font = QtGui.QFont(roboto_font, 10)  # Adjust size as needed
+        font = QtGui.QFont(roboto_font, 10)
         app.setFont(font)
     else:
         print("Falling back to default system font.")
     
     window = MainWindow()
+    window.setWindowIcon(QtGui.QIcon(resource_path("logo.ico")))  # Ensure main window gets the icon
     window.show()
     
     with loop:
