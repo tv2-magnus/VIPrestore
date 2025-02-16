@@ -217,3 +217,32 @@ class VideoIPathClient:
         except VideoIPathClientError:
             pass
         return None
+
+    def get_profiles(self) -> dict:
+        return self.get("/rest/v1/data/config/profiles/*/id,name,description,tags/**")
+
+    def get_local_endpoints(self) -> dict:
+        return self.get("/rest/v1/data/config/network/nGraphElements/**")
+
+    def get_external_endpoints(self) -> dict:
+        return self.get("/rest/v1/data/status/network/externalEndpoints/**")
+
+    def get_endpoint_map(self) -> dict:
+        endpoint_map = {}
+        try:
+            local = self.get_local_endpoints()
+            ngraph = local.get("data", {}).get("config", {}).get("network", {}).get("nGraphElements", {})
+            for node_id, node_data in ngraph.items():
+                label = node_data.get("value", {}).get("descriptor", {}).get("label", "")
+                endpoint_map[node_id] = label if label else node_id
+        except Exception:
+            pass
+        try:
+            external = self.get_external_endpoints()
+            ext_data = external.get("data", {}).get("status", {}).get("network", {}).get("externalEndpoints", {})
+            for ext_id, ext_val in ext_data.items():
+                lbl = ext_val.get("descriptor", {}).get("label") or ""
+                endpoint_map[ext_id] = lbl if lbl else ext_id
+        except Exception:
+            pass
+        return endpoint_map

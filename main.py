@@ -826,28 +826,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
     async def _fetchServicesData(self) -> dict:
         future_normal = self._run_api_call(self.client.retrieve_services)
-        future_profiles = self._run_api_call(lambda: self.client.get("/rest/v1/data/config/profiles/*/id,name,description,tags/**"))
-        future_ep_local = self._run_api_call(lambda: self.client.get("/rest/v1/data/config/network/nGraphElements/**"))
-        future_ep_ext = self._run_api_call(lambda: self.client.get("/rest/v1/data/status/network/externalEndpoints/**"))
+        future_profiles = self._run_api_call(self.client.get_profiles)
+        future_endpoint_map = self._run_api_call(self.client.get_endpoint_map)  # see next refactoring
         future_group = self._run_api_call(self.client.retrieve_group_connections)
         
-        normal_services, profiles_resp, resp_local, resp_ext, group_res = await asyncio.gather(
-            future_normal, future_profiles, future_ep_local, future_ep_ext, future_group
+        normal_services, profiles_resp, endpoint_map, group_res = await asyncio.gather(
+            future_normal, future_profiles, future_endpoint_map, future_group
         )
         
         return {
             "normal_services": normal_services,
             "profiles_resp": profiles_resp,
-            "resp_local": resp_local,
-            "resp_ext": resp_ext,
+            "endpoint_map": endpoint_map,
             "group_res": group_res,
         }
 
     def _processServicesData(self, responses: dict) -> dict:
         normal_services = responses["normal_services"]
         profiles_resp = responses["profiles_resp"]
-        resp_local = responses["resp_local"]
-        resp_ext = responses["resp_ext"]
+        endpoint_map = responses["endpoint_map"]
         group_res = responses["group_res"]
         group_services, child_to_group = group_res
 
@@ -867,24 +864,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         prof_data = profiles_resp.get("data", {}).get("config", {}).get("profiles", {})
         profile_mapping = {pid: info.get("name", pid) for pid, info in prof_data.items()}
-
-        endpoint_map = {}
-        try:
-            ngraph = resp_local.get("data", {}).get("config", {}).get("network", {}).get("nGraphElements", {})
-            for node_id, node_data in ngraph.items():
-                val = node_data.get("value", {})
-                label = val.get("descriptor", {}).get("label", "")
-                endpoint_map[node_id] = label if label else node_id
-        except Exception:
-            pass
-        try:
-            ext_data = resp_ext.get("data", {}).get("status", {}).get("network", {}).get("externalEndpoints", {})
-            for ext_id, ext_val in ext_data.items():
-                desc_obj = ext_val.get("descriptor", {})
-                lbl = desc_obj.get("label") or ""
-                endpoint_map[ext_id] = lbl if lbl else ext_id
-        except Exception:
-            pass
 
         return {
             "merged": merged,
@@ -1142,35 +1121,6 @@ class MainWindow(QtWidgets.QMainWindow):
             QtGui.QStandardItem(str(prof_name)),
         ]
         self.serviceModel.appendRow(row_items)
-
-    def _loadEndpointData(self):
-        self._endpoint_map = {}
-
-        try:
-            resp_local = self.client.get("/rest/v1/data/config/network/nGraphElements/**")
-            ngraph = resp_local.get("data", {}).get("config", {}).get("network", {}).get("nGraphElements", {})
-            for node_id, node_data in ngraph.items():
-                val = node_data.get("value", {})
-                label = val.get("descriptor", {}).get("label", "")
-                if label:
-                    self._endpoint_map[node_id] = label
-                else:
-                    self._endpoint_map[node_id] = node_id
-        except VideoIPathClientError:
-            pass
-
-        try:
-            resp_ext = self.client.get("/rest/v1/data/status/network/externalEndpoints/**")
-            ext_data = resp_ext.get("data", {}).get("status", {}).get("network", {}).get("externalEndpoints", {})
-            for ext_id, ext_val in ext_data.items():
-                desc_obj = ext_val.get("descriptor", {})
-                lbl = desc_obj.get("label") or ""
-                if lbl:
-                    self._endpoint_map[ext_id] = lbl
-                else:
-                    self._endpoint_map[ext_id] = ext_id
-        except VideoIPathClientError:
-            pass
 
     def checkSession(self):
         if not self.client:
