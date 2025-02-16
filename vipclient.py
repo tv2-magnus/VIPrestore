@@ -95,3 +95,125 @@ class VideoIPathClient:
 
     def count_services(self) -> int:
         return len(self.retrieve_services())
+
+    def retrieve_group_connections(self) -> tuple[dict, dict]:
+        """
+        Returns a tuple (group_services, child_to_group).
+        group_services: dict of all group-based services
+        child_to_group: dict that maps each child service ID to its group parent ID
+        """
+        try:
+            url = (
+                "/rest/v1/data/status/conman/services/"
+                "*%20where%20type='group'/connection/"
+                "connection.generic,generic/**/.../.../connection.to,from,to,id,rev,specific/"
+                "specific.breakAway,breakAway,complete,missingActiveConnections,numChildren,children/*"
+            )
+            resp = self.get(url)
+            conman = resp.get("data", {}).get("status", {}).get("conman", {})
+            raw_services = conman.get("services", {})
+
+            group_services = {}
+            child_to_group = {}
+
+            for svc_key, svc_data in raw_services.items():
+                connection = svc_data.get("connection", {})
+                group_id = connection.get("id", svc_key)
+                gen = connection.get("generic", {})
+                spec = connection.get("specific", {})
+                desc = gen.get("descriptor", {})
+
+                group_services[group_id] = {
+                    "type": "group",
+                    "booking": {
+                        "serviceId": group_id,
+                        "from": connection.get("from", ""),
+                        "to": connection.get("to", ""),
+                        "allocationState": None,
+                        "createdBy": "",
+                        "lockedBy": ("GroupLocked" if gen.get("locked") else ""),
+                        "isRecurrentInstance": False,
+                        "timestamp": "",
+                        "descriptor": {
+                            "label": desc.get("label", ""),
+                            "desc": desc.get("desc", "")
+                        },
+                        "profile": "",
+                        "auditHistory": [],
+                    },
+                    "res": {
+                        "breakAway": spec.get("breakAway"),
+                        "complete": spec.get("complete"),
+                        "missingActiveConnections": spec.get("missingActiveConnections", {}),
+                        "numChildren": spec.get("numChildren", 0),
+                        "children": spec.get("children", {}),
+                        "rev": connection.get("rev", ""),
+                        "state": gen.get("state", None)
+                    }
+                }
+
+                # Map any child connections to this group
+                children_map = spec.get("children", {})
+                for child_id in children_map.keys():
+                    child_to_group[child_id] = group_id
+
+            return (group_services, child_to_group)
+
+        except VideoIPathClientError:
+            return ({}, {})
+
+    def fetch_single_group_connection(self, group_id: str) -> Optional[dict]:
+        """
+        Fetch a single group-based service from the server by group_id.
+        Returns the service dict or None if not found.
+        """
+        try:
+            url = (
+                "/rest/v1/data/status/conman/services/"
+                "*%20where%20type='group'/connection/"
+                "connection.generic,generic/**/.../.../connection.to,from,to,id,rev,specific/"
+                "specific.breakAway,breakAway,complete,missingActiveConnections,numChildren,children/*"
+            )
+            resp = self.get(url)
+            conman = resp.get("data", {}).get("status", {}).get("conman", {})
+            raw_services = conman.get("services", {})
+
+            for svc_key, svc_data in raw_services.items():
+                connection = svc_data.get("connection", {})
+                g_id = connection.get("id", svc_key)
+                if g_id == group_id:
+                    gen = connection.get("generic", {})
+                    spec = connection.get("specific", {})
+                    desc = gen.get("descriptor", {})
+
+                    return {
+                        "type": "group",
+                        "booking": {
+                            "serviceId": g_id,
+                            "from": connection.get("from", ""),
+                            "to": connection.get("to", ""),
+                            "allocationState": None,
+                            "createdBy": "",
+                            "lockedBy": ("GroupLocked" if gen.get("locked") else ""),
+                            "isRecurrentInstance": False,
+                            "timestamp": "",
+                            "descriptor": {
+                                "label": desc.get("label", ""),
+                                "desc": desc.get("desc", "")
+                            },
+                            "profile": "",
+                            "auditHistory": [],
+                        },
+                        "res": {
+                            "breakAway": spec.get("breakAway"),
+                            "complete": spec.get("complete"),
+                            "missingActiveConnections": spec.get("missingActiveConnections", {}),
+                            "numChildren": spec.get("numChildren", 0),
+                            "children": spec.get("children", {}),
+                            "rev": connection.get("rev", ""),
+                            "state": gen.get("state", None)
+                        }
+                    }
+        except VideoIPathClientError:
+            pass
+        return None
