@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="spinnerGradient" gradientTransform="rotate(90)">
+      <stop offset="0%" stop-color="#00f5d4"/>
+      <stop offset="100%" stop-color="#bf00ff"/>
+    </linearGradient>
+  </defs>
+  
+  <path 
+    d="M 50 10 A 40 40 0 1 1 49.99 10"
+    fill="none"
+    stroke="url(#spinnerGradient)"
+    stroke-width="8"
+    stroke-linecap="round"
+    stroke-dasharray="251"
+    stroke-dashoffset="251">
+    <animateTransform
+      attributeName="transform"
+      type="rotate"
+      from="0 50 50"
+      to="360 50 50"
+      dur="1s"
+      repeatCount="indefinite"/>
+    <animate
+      attributeName="stroke-dashoffset"
+      values="251;100;251"
+      dur="1.6s"
+      repeatCount="indefinite"
+      keyTimes="0;0.5;1"/>
+  </path>
+</svg>

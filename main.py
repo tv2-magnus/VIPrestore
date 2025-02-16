@@ -15,14 +15,20 @@ from group_detail_dialog import GroupDetailDialog
 from PyQt6.QtCore import Qt
 from concurrent.futures import ThreadPoolExecutor
 from services_filter import ServicesFilterProxy
-import socket
-import ssl
-import urllib.parse
 
-def resource_path(relative_path):
-    """Get the absolute path to a resource, supporting PyInstaller."""
-    base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
-    return os.path.join(base_path, relative_path)
+from utils import resource_path
+
+import logging
+
+# Configure logging to file and console
+logging.basicConfig(
+    filename='viprestore.log',
+    filemode='a',
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.DEBUG
+)
+logging.debug("Application started")
+
 
 def set_app_icon(app, window):
     """
@@ -91,20 +97,6 @@ def load_custom_fonts():
 
     return loaded_fonts
 
-def verify_ssl_cert(server_url: str) -> bool:
-    parsed = urllib.parse.urlparse(server_url)
-    hostname = parsed.hostname
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    context = ssl.create_default_context()
-    try:
-        with socket.create_connection((hostname, port), timeout=10) as sock:
-            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
-                return True
-    except ssl.SSLError:
-        return False
-    except Exception:
-        return False
-
 class WorkerSignals(QtCore.QObject):
     finished = QtCore.pyqtSignal(dict)
     error = QtCore.pyqtSignal(str)
@@ -112,7 +104,7 @@ class WorkerSignals(QtCore.QObject):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        uic.loadUi("main.ui", self)
+        uic.loadUi(resource_path("main.ui"), self)
 
         # Add this right after super().__init__()
         self.bold_font_family = None  # Will be set from main()
@@ -151,9 +143,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.actionAbout = QtGui.QAction("About", self)
         self.actionAbout.setShortcut("F1")
         
-        self.actionSettings = QtGui.QAction("Settings", self)
-        self.actionSettings.setShortcut("Ctrl+,")
-        
         # Add actions to File menu with grouping separators
         self.menuFile.addAction(self.actionLogin)
         self.menuFile.addAction(self.actionLogout)
@@ -171,7 +160,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Add actions to Help menu with a separator
         self.menuHelp.addAction(self.actionAbout)
         self.menuHelp.addSeparator()
-        self.menuHelp.addAction(self.actionSettings)
         
         # Connect Action Signals
         self.actionLogin.triggered.connect(lambda: asyncio.create_task(self.doLogin()))
@@ -182,7 +170,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.actionRefresh.triggered.connect(lambda: asyncio.create_task(self.refreshServicesAsync()))
         self.actionEditSystems.triggered.connect(self.editSystems)
         self.actionAbout.triggered.connect(self.showAbout)
-        self.actionSettings.triggered.connect(self.showSettings)
         
         self.setSplitterPlacement()
         
@@ -274,21 +261,28 @@ class MainWindow(QtWidgets.QMainWindow):
         # Service count
         self.labelServiceCount = QtWidgets.QLabel("Total services: 0")
         status_bar.addWidget(self.labelServiceCount)
-        self.labelServiceCount.setVisible(False)  # Hide when no connection
+        self.labelServiceCount.setVisible(False)
 
         # User info (name and role)
         self.labelUserInfo = QtWidgets.QLabel("User: N/A | Role: N/A")
         status_bar.addWidget(self.labelUserInfo)
 
-        # Loading spinner
+        # Loading spinner (force a fixed size to prevent expansion)
         self.loadingLabel = QtWidgets.QLabel("")
-        self.loadingMovie = QtGui.QMovie("spinner.gif")
+        self.loadingMovie = QtGui.QMovie(resource_path(os.path.join("logos", "spinner.gif")))
         self.loadingLabel.setMovie(self.loadingMovie)
+        self.loadingLabel.setFixedSize(20, 20)  # <-- Fixed size to constrain height
         status_bar.addWidget(self.loadingLabel)
         self.loadingLabel.setVisible(False)
 
         # Temporary status message on the far right
         self.statusMsgLabel = QtWidgets.QLabel("")
+
+        # Ensure the status message label has a fixed vertical size
+        self.statusMsgLabel.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed
+        )
         status_bar.addPermanentWidget(self.statusMsgLabel)
 
         # Set Initial Connection Status
@@ -303,7 +297,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tableWidgetServiceDetails.setFont(bold_font)
 
     def set_bold_font_family(self, font_family):
-        """Set the bold font family and update all table styles"""
         print(f"Setting bold font family to: {font_family}")
         self.bold_font_family = font_family
         if self.bold_font_family:
@@ -321,8 +314,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 }}
             """
             print("Applying table style with bold font")
-            self.setStyleSheet(table_style)
+            # Remove this line to avoid affecting the entire window:
+            # self.setStyleSheet(table_style)
             self.tableWidgetServiceDetails.setStyleSheet(table_style)
+            self.tableViewServices.setStyleSheet(table_style)
             
             # Force update of table fonts
             self.tableViewServices.setFont(QtGui.QFont(self.bold_font_family, 10, QtGui.QFont.Weight.Bold))
@@ -345,12 +340,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.client = VideoIPathClient(server_url)
             loop = asyncio.get_running_loop()
             try:
-                # If using HTTPS, verify the SSL certificate.
-                if server_url.startswith("https://"):
-                    ssl_verified = await loop.run_in_executor(self.executor, verify_ssl_cert, server_url)
-                else:
-                    ssl_verified = False  # HTTP has no SSL verification.
-                
                 await loop.run_in_executor(self.executor, self.client.login, username, password)
                 session_info = await loop.run_in_executor(self.executor, lambda: self.client.get("/api/_session"))
                 user_data = session_info.get("userCtx", {})
@@ -372,6 +361,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.updateConnectionStatus(False)
                 continue
 
+            # Determine SSL verification status based on client settings.
+            ssl_verified = self.client.session.verify if server_url.startswith("https://") else False
             self.updateConnectionStatus(True, ssl_verified)
             await self.refreshServicesAsync()
             break
@@ -681,12 +672,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def showAbout(self):
         dlg = QtWidgets.QDialog()
-        uic.loadUi("about_dialog.ui", dlg)
-        dlg.exec()
-
-    def showSettings(self):
-        dlg = QtWidgets.QDialog()
-        uic.loadUi("settings_dialog.ui", dlg)
+        uic.loadUi(resource_path("about_dialog.ui"), dlg)
         dlg.exec()
 
     def _onDetailsCellClicked(self, row: int, col: int):

@@ -1,16 +1,17 @@
 import json
 from PyQt6 import QtWidgets, uic
+from utils import resource_path
 
 class LoginDialog(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
-        uic.loadUi("login_dialog.ui", self)
+        uic.loadUi(resource_path("login_dialog.ui"), self)
         self.loginButton.clicked.connect(self.accept)
         self.loadRemoteSystems()
 
     def loadRemoteSystems(self):
         try:
-            with open("remotesystems.json", "r") as f:
+            with open(resource_path("remotesystems.json"), "r") as f:
                 systems = json.load(f)
         except Exception:
             systems = []
