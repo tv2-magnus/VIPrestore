@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Service Monitor</string>
+   <string>VIPrestore</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QHBoxLayout" name="horizontalLayoutCentral">
@@ -52,40 +52,26 @@
       <widget class="QWidget" name="splitterRight">
        <layout class="QVBoxLayout" name="verticalLayoutRight">
         <item>
-         <widget class="QTabWidget" name="tabWidgetDetails">
-          <property name="tabPosition">
-           <enum>QTabWidget::North</enum>
+         <widget class="QTableWidget" name="tableWidgetServiceDetails">
+          <property name="editTriggers">
+           <set>QAbstractItemView::NoEditTriggers</set>
           </property>
-          <widget class="QWidget" name="tabServiceDetails">
-           <attribute name="title">
-            <string>Service Details</string>
-           </attribute>
-           <layout class="QVBoxLayout" name="verticalLayoutServiceDetails">
-            <item>
-             <widget class="QTableWidget" name="tableWidgetServiceDetails">
-              <property name="editTriggers">
-               <set>QAbstractItemView::NoEditTriggers</set>
-              </property>
-              <property name="rowCount">
-               <number>0</number>
-              </property>
-              <property name="columnCount">
-               <number>2</number>
-              </property>
-              <column>
-               <property name="text">
-                <string>Field</string>
-               </property>
-              </column>
-              <column>
-               <property name="text">
-                <string>Value</string>
-               </property>
-              </column>
-             </widget>
-            </item>
-           </layout>
-          </widget>
+          <property name="rowCount">
+           <number>0</number>
+          </property>
+          <property name="columnCount">
+           <number>2</number>
+          </property>
+          <column>
+           <property name="text">
+            <string>Field</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Value</string>
+           </property>
+          </column>
          </widget>
         </item>
        </layout>
@@ -124,7 +110,7 @@
           </widget>
          </item>
          <item row="0" column="1">
-          <widget class="QLineEdit" name="lineEditSourceFilter"/>
+          <widget class="QLineEdit" name="lineEditSourceFilter" />
          </item>
          <item row="1" column="0">
           <widget class="QLabel" name="labelDestinationFilter">
@@ -134,7 +120,7 @@
           </widget>
          </item>
          <item row="1" column="1">
-          <widget class="QLineEdit" name="lineEditDestinationFilter"/>
+          <widget class="QLineEdit" name="lineEditDestinationFilter" />
          </item>
          <item row="2" column="0">
           <widget class="QLabel" name="labelStartTime">
@@ -195,7 +181,7 @@
               <height>60</height>
              </rect>
             </property>
-            <layout class="QVBoxLayout" name="verticalLayoutProfilesList"/>
+            <layout class="QVBoxLayout" name="verticalLayoutProfilesList" />
            </widget>
           </widget>
          </item>
@@ -219,7 +205,6 @@
     <property name="title">
      <string>&amp;File</string>
     </property>
-    <!-- File menu actions removed to be populated in code -->
    </widget>
    <widget class="QMenu" name="menuEdit">
     <property name="title">
@@ -235,23 +220,22 @@
     <property name="title">
      <string>&amp;Tools</string>
     </property>
-    <addaction name="actionSettings"/>
-    <addaction name="actionRefresh"/>
+    <addaction name="actionSettings" />
+    <addaction name="actionRefresh" />
    </widget>
    <widget class="QMenu" name="menuHelp">
     <property name="title">
      <string>&amp;Help</string>
     </property>
-    <addaction name="actionAbout"/>
+    <addaction name="actionAbout" />
    </widget>
-   <addaction name="menuFile"/>
-   <addaction name="menuEdit"/>
-   <addaction name="menuView"/>
-   <addaction name="menuTools"/>
-   <addaction name="menuHelp"/>
+   <addaction name="menuFile" />
+   <addaction name="menuEdit" />
+   <addaction name="menuView" />
+   <addaction name="menuTools" />
+   <addaction name="menuHelp" />
   </widget>
-  <!-- Updated status bar: now empty; it will be built entirely in code -->
-  <widget class="QStatusBar" name="statusbar"/>
+  <widget class="QStatusBar" name="statusbar" />
   <action name="actionSettings">
    <property name="text">
     <string>&amp;Settings</string>
@@ -268,6 +252,6 @@
    </property>
   </action>
  </widget>
- <resources/>
- <connections/>
+ <resources />
+ <connections />
 </ui>
