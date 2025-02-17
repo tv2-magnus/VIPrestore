@@ -19,7 +19,6 @@ from utils import resource_path
 import logging
 from pathlib import Path
 
-# Create a log folder in LOCALAPPDATA
 log_dir = Path(os.getenv('LOCALAPPDATA')) / "VIPrestore"
 log_dir.mkdir(parents=True, exist_ok=True)
 
