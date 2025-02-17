@@ -1,0 +1,16 @@
+changelog:
+  categories:
+    - title: New Features 🎉
+      commits:
+        - "^feat"
+        - "^add"
+    - title: Bug Fixes 🐛
+      commits:
+        - "^fix"
+    - title: Configuration Changes 🔧
+      commits:
+        - "^config"
+        - "^chore"
+    - title: Other Changes
+      commits:
+        - "^.*"
