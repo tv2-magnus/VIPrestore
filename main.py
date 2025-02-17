@@ -7,22 +7,25 @@ from datetime import datetime, timedelta
 from qasync import QEventLoop
 from PyQt6.QtGui import QGuiApplication
 from PyQt6 import QtWidgets, uic, QtGui, QtCore
-from PyQt6.QtCore import QSize
+from PyQt6.QtCore import QSize, Qt
 from vipclient import VideoIPathClient, VideoIPathClientError
 from login_dialog import LoginDialog
 from load_services_dialog import LoadServicesDialog
 from group_detail_dialog import GroupDetailDialog
-from PyQt6.QtCore import Qt
 from concurrent.futures import ThreadPoolExecutor
 from services_filter import ServicesFilterProxy
-
 from utils import resource_path
 
 import logging
+from pathlib import Path
 
-# Configure logging to file and console
+# Create a log folder in LOCALAPPDATA
+log_dir = Path(os.getenv('LOCALAPPDATA')) / "VIPrestore"
+log_dir.mkdir(parents=True, exist_ok=True)
+
+# Configure logging
 logging.basicConfig(
-    filename='viprestore.log',
+    filename=str(log_dir / 'viprestore.log'),
     filemode='a',
     format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.DEBUG
