@@ -9,7 +9,10 @@ categories:
     labels: ['refactor', 'change']
   - title: '🛠 Technical Updates'
     labels: ['chore', 'internal']
+
+# ✅ This ensures that **direct commits** are tracked, not just PRs.
 change-template: '- $TITLE ([commit](https://github.com/${{ github.repository }}/commit/$COMMIT)) by @$AUTHOR'
+
 template: |
   # 🚀 Release v$NEXT_PATCH_VERSION
 
