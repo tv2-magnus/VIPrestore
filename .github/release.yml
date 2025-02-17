@@ -3,7 +3,6 @@ changelog:
     - title: 🚀 New Features
       labels:
         - feature
-      # Detects commit messages starting with "feat:"
       filters:
         include:
           - "^feat:"
@@ -11,37 +10,18 @@ changelog:
     - title: 🐛 Bug Fixes
       labels:
         - bug
-      # Detects commit messages starting with "fix:"
       filters:
         include:
           - "^fix:"
 
-    - title: 📦 Dependency Updates
-      labels:
-        - dependencies
-      # Detects commits that update dependencies
-      filters:
-        include:
-          - "^chore\\(deps\\):"
-
-    - title: 🛠️ Maintenance & Refactoring
+    - title: 🛠️ Maintenance & Other Changes
       labels:
         - maintenance
-      # Detects "refactor:" and "chore:"
+        - "*"
       filters:
         include:
-          - "^refactor:"
           - "^chore:"
-
-    - title: 📝 Documentation Updates
-      labels:
-        - documentation
-      # Detects "docs:" in commit messages
-      filters:
-        include:
-          - "^docs:"
 
     - title: 🔄 Other Changes
       labels:
         - "*"
-      # Fallback for any commit messages that don’t match above patterns
