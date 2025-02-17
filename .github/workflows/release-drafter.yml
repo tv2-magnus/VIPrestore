@@ -1,0 +1,25 @@
+name: 🚀 Auto Release Notes
+
+on:
+  push:
+    branches:
+      - master  # Runs on every push to master
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  update_release_draft:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # Required for creating release notes
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate Release Notes
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
