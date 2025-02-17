@@ -9,7 +9,7 @@ categories:
     labels: ['refactor', 'change']
   - title: '🛠 Technical Updates'
     labels: ['chore', 'internal']
-change-template: '- $TITLE [#$NUMBER](https://github.com/${{ github.repository }}/commit/$COMMIT) by @$AUTHOR'
+change-template: '- $TITLE ([commit](https://github.com/${{ github.repository }}/commit/$COMMIT)) by @$AUTHOR'
 template: |
   # 🚀 Release v$NEXT_PATCH_VERSION
 
