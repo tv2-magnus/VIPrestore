@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 from qasync import QEventLoop
 from PyQt6.QtGui import QGuiApplication
 from PyQt6 import QtWidgets, uic, QtGui, QtCore
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, Qt, QTimer
+from PyQt6.QtWidgets import QProgressDialog, QMessageBox, QApplication
 from vipclient import VideoIPathClient, VideoIPathClientError
 from login_dialog import LoginDialog
 from load_services_dialog import LoadServicesDialog
@@ -15,10 +16,15 @@ from group_detail_dialog import GroupDetailDialog
 from concurrent.futures import ThreadPoolExecutor
 from services_filter import ServicesFilterProxy
 from utils import resource_path
-
+import requests
+import tempfile
+import subprocess
 import logging
 from pathlib import Path
+from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 log_dir = Path(os.getenv('LOCALAPPDATA')) / "VIPrestore"
 log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -31,6 +37,165 @@ logging.basicConfig(
 )
 logging.debug("Application started")
 
+def create_splash_screen():
+    from PyQt6 import QtWidgets, QtGui, QtCore
+    splash_pix = QtGui.QPixmap(resource_path("splash.png"))
+    splash = QtWidgets.QSplashScreen(splash_pix, QtCore.Qt.WindowType.FramelessWindowHint)
+    splash.setMask(splash_pix.mask())  # Optional: for non-rectangular shapes
+    splash.showMessage(
+        "Loading, please wait...",
+        QtCore.Qt.AlignmentFlag.AlignBottom | QtCore.Qt.AlignmentFlag.AlignHCenter,
+        QtGui.QColor("white")
+    )
+    return splash
+
+def get_current_version():
+    """
+    Reads the current application version from version.txt in the project directory.
+    """
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(base_dir, "version.txt"), "r", encoding="utf-8") as f:
+            version = f.read().strip()
+            logging.debug(f"Current version: {version}")
+            return version
+    except Exception as e:
+        logging.error(f"Error reading version.txt: {e}")
+        return "0.0.0"
+
+def parse_version(version_str):
+    """
+    Converts a version string (e.g. 'v1.2.3' or '1.2.3') into a tuple of integers.
+    """
+    try:
+        return tuple(int(part) for part in version_str.lstrip("v").split("."))
+    except Exception as e:
+        logging.error(f"Error parsing version string '{version_str}': {e}")
+        return (0, 0, 0)
+
+def check_for_update(current_version, repo_owner, repo_name):
+    load_dotenv()  # Loads .env variables
+
+    url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases"
+    token = os.getenv("GITHUB_TOKEN")
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        if not data:
+            logging.debug("No releases found.")
+            return None
+
+        latest = data[0]  # newest release first
+        latest_version = latest.get("tag_name", "").strip()
+        if parse_version(latest_version) > parse_version(current_version):
+            logging.debug(f"Update available: {latest_version} > {current_version}")
+            return latest
+        logging.debug("No update available.")
+        return None
+
+    except Exception as e:
+        logging.error(f"Update check failed: {e}")
+        return None
+
+def download_update(update_info):
+    assets = update_info.get("assets", [])
+    if not assets:
+        QMessageBox.critical(None, "Update Error", "No downloadable assets found in the latest release.")
+        return
+
+    asset = assets[0]
+    asset_api_url = asset.get("url")
+    filename = asset.get("name")
+
+    token = os.getenv("GITHUB_TOKEN")
+    headers = {"Accept": "application/octet-stream"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    # Set up the progress dialog.
+    progress = QProgressDialog("Preparing...", "Cancel", 0, 100)
+    progress.setWindowTitle("Downloading Update")
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
+    progress.show()
+
+    logging.debug("Download update initiated.")
+    logging.debug(f"Asset URL: {asset_api_url}")
+    logging.debug(f"Filename: {filename}")
+
+    dots = 0
+    def update_dots():
+        nonlocal dots
+        dots = (dots + 1) % 4
+        text = f"Preparing{'.' * dots}"
+        progress.setLabelText(text)
+        logging.debug(f"Preparing animation updated: {text}")
+
+    # Create a QTimer and attach it to the progress dialog to prevent garbage collection.
+    timer = QtCore.QTimer()
+    timer.timeout.connect(update_dots)
+    timer.start(500)
+    progress._update_timer = timer  # Persist timer as an attribute.
+
+    temp_dir = tempfile.gettempdir()
+    file_path = os.path.join(temp_dir, filename)
+    logging.debug(f"Temporary file path: {file_path}")
+
+    def start_download():
+        timer.stop()
+        progress.setLabelText("Downloading update...")
+        logging.debug("Starting actual download.")
+        try:
+            response = requests.get(asset_api_url, stream=True, headers=headers, timeout=30)
+            response.raise_for_status()
+            content_length = int(response.headers.get('content-length', 0))
+            logging.debug(f"Content length: {content_length} bytes")
+
+            downloaded_size = 0
+            with open(file_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if progress.wasCanceled():
+                        logging.debug("Download cancelled by user.")
+                        f.close()
+                        os.remove(file_path)
+                        return
+                    if chunk:
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
+                        logging.debug(f"Downloaded {downloaded_size} of {content_length} bytes")
+                        if content_length:
+                            percent = int((downloaded_size / content_length) * 100)
+                            progress.setValue(percent)
+                            progress.setLabelText(
+                                f"Downloading update... {percent}%\n({downloaded_size}/{content_length} bytes)"
+                            )
+            progress.setValue(100)
+            logging.debug("Download complete.")
+            reply = QMessageBox.question(
+                None,
+                "Update Downloaded",
+                "Update has been downloaded. Would you like to install it now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            logging.debug(f"User selected: {'Yes' if reply == QMessageBox.StandardButton.Yes else 'No'}")
+            if reply == QMessageBox.StandardButton.Yes:
+                logging.debug("Launching the downloaded update.")
+                subprocess.Popen([file_path], shell=True)
+        except Exception as e:
+            logging.error(f"Error during download: {e}")
+            QMessageBox.critical(None, "Update Error", f"Failed to download and run update: {e}")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+    # Schedule start_download to run after 2 seconds.
+    QtCore.QTimer.singleShot(2000, start_download)
 
 def set_app_icon(app, window):
     """
@@ -289,6 +454,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Set Initial Connection Status
         self.updateConnectionStatus(False)
+
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        """
+        When the main window is about to close, stop the sessionTimer
+        so it doesn't keep calling checkSession() on a destroyed window.
+        """
+        if self.sessionTimer.isActive():
+            self.sessionTimer.stop()
+        super().closeEvent(event)
 
     def update_table_fonts(self):
         """Update table fonts explicitly"""
@@ -1142,38 +1316,63 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tableWidgetServiceDetails.setRowCount(0)
 
 def main():
-
-    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-    )
-
+    logger.debug("Starting application and creating QApplication...")
     app = QtWidgets.QApplication(sys.argv)
-    loop = QEventLoop(app)
-    asyncio.set_event_loop(loop)
+    # We do NOT call app.setQuitOnLastWindowClosed(False), so it uses the default (True).
 
-    # (Load fonts, etc.)
+    # 1) Show the splash immediately
+    splash = create_splash_screen()
+    splash.show()
+    app.processEvents()
+    logger.debug("Splash screen displayed.")
+
+    # 2) Create the main window in advance (but don't show it yet)
+    logger.debug("Creating MainWindow instance (hidden).")
+    main_window = MainWindow()
+
+    # (Optional) Load custom fonts or do any other app-wide setup here
     loaded_fonts = load_custom_fonts()
-    print(f"Loaded fonts: {loaded_fonts}")  # Debug print
-
     if 'regular' in loaded_fonts:
-        print(f"Setting regular font: {loaded_fonts['regular']}")  # Debug print
-        default_font = QtGui.QFont(loaded_fonts['regular'], 10)
-        app.setFont(default_font)
-    else:
-        print("Falling back to default system font.")
-
-    window = MainWindow()
-
-    # (Set fonts if needed)
+        app.setFont(QtGui.QFont(loaded_fonts['regular'], 10))
     if 'bold' in loaded_fonts:
-        window.set_bold_font_family(loaded_fonts['bold'])
+        main_window.set_bold_font_family(loaded_fonts['bold'])
 
-    # Set application/window icon with best practices
-    set_app_icon(app, window)
-    window.show()
+    set_app_icon(app, main_window)
 
-    with loop:
-        loop.run_forever()
+    # 3) Do the update check
+    logger.debug("Performing update check.")
+    current_version = get_current_version()
+    update_info = check_for_update(current_version, "magnusoverli", "VIPrestore")
+    if update_info:
+        latest_version = update_info.get("tag_name")
+        logger.debug(f"Update available: {latest_version} > {current_version}")
+
+        msg = QtWidgets.QMessageBox()
+        msg.setWindowTitle("Update Available")
+        msg.setText(f"A new version ({latest_version}) is available. Download and install now?")
+        msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes |
+                               QtWidgets.QMessageBox.StandardButton.No)
+        logger.debug("Showing update prompt...")
+        choice = msg.exec()
+
+        if choice == QtWidgets.QMessageBox.StandardButton.Yes:
+            # 4) User accepted => download and quit
+            logger.debug("User accepted. Downloading update...")
+            download_update(update_info)
+            logger.debug("Update initiated. Exiting soon.")
+            sys.exit(0)
+        else:
+            logger.debug("User declined the update. Proceed to show the main window.")
+    else:
+        logger.debug("No update found or update check failed. Showing main window.")
+
+    # 5) If user declined update or no update found, hide splash and show main window
+    splash.finish(main_window)
+    main_window.show()
+
+    # 6) Use the standard approach for PyQt event loop
+    logger.debug("Starting the standard Qt event loop with app.exec()")
+    sys.exit(app.exec())
 
 if __name__ == "__main__":
     main()
