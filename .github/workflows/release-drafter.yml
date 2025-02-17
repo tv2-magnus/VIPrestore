@@ -3,7 +3,7 @@ name: 🚀 Auto Release Notes
 on:
   push:
     branches:
-      - master  # Runs on every push to master
+      - main  # Runs on every push to master
   workflow_dispatch: # Allows manual trigger from GitHub UI
   schedule:
     - cron: '0 0 * * *'  # Runs daily at midnight (optional)
