@@ -16,6 +16,7 @@ pyinstaller-hooks-contrib==2025.1
 PyQt6==6.8.1
 PyQt6-Qt6==6.8.2
 PyQt6_sip==13.10.0
+python-dotenv==1.0.1
 pywin32-ctypes==0.2.3
 qasync==0.27.1
 requests==2.32.3
