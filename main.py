@@ -167,6 +167,18 @@ def check_for_update(current_version, repo_owner, repo_name):
         return None
 
 def download_update(update_info):
+    import sys
+    from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+    from PyQt6.QtCore import QTimer, Qt
+
+    # Same token as in check_for_update
+    token = "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"
+    
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/octet-stream"
+    }
+
     assets = update_info.get("assets", [])
     if not assets:
         QMessageBox.critical(None, "Update Error", "No downloadable assets found in the latest release.")
@@ -176,12 +188,6 @@ def download_update(update_info):
     asset_api_url = asset.get("url")
     filename = asset.get("name")
 
-    token = os.getenv("GITHUB_TOKEN")
-    headers = {"Accept": "application/octet-stream"}
-    if token:
-        headers["Authorization"] = f"token {token}"
-
-    # Set up the progress dialog.
     progress = QProgressDialog("Preparing...", "Cancel", 0, 100)
     progress.setWindowTitle("Downloading Update")
     progress.setWindowModality(Qt.WindowModality.WindowModal)
@@ -201,11 +207,10 @@ def download_update(update_info):
         progress.setLabelText(text)
         logging.debug(f"Preparing animation updated: {text}")
 
-    # Create a QTimer and attach it to the progress dialog to prevent garbage collection.
-    timer = QtCore.QTimer()
+    timer = QTimer()
     timer.timeout.connect(update_dots)
     timer.start(500)
-    progress._update_timer = timer  # Persist timer as an attribute.
+    progress._update_timer = timer
 
     temp_dir = tempfile.gettempdir()
     file_path = os.path.join(temp_dir, filename)
@@ -218,6 +223,7 @@ def download_update(update_info):
         try:
             response = requests.get(asset_api_url, stream=True, headers=headers, timeout=30)
             response.raise_for_status()
+
             content_length = int(response.headers.get('content-length', 0))
             logging.debug(f"Content length: {content_length} bytes")
 
@@ -244,21 +250,23 @@ def download_update(update_info):
             reply = QMessageBox.question(
                 None,
                 "Update Downloaded",
-                "Update has been downloaded. Would you like to install it now?",
+                "Update has been downloaded. Install it now?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             logging.debug(f"User selected: {'Yes' if reply == QMessageBox.StandardButton.Yes else 'No'}")
             if reply == QMessageBox.StandardButton.Yes:
                 logging.debug("Launching the downloaded update.")
                 subprocess.Popen([file_path], shell=True)
+                QtWidgets.QApplication.quit()
+                sys.exit(0)
         except Exception as e:
             logging.error(f"Error during download: {e}")
             QMessageBox.critical(None, "Update Error", f"Failed to download and run update: {e}")
             if os.path.exists(file_path):
                 os.remove(file_path)
 
-    # Schedule start_download to run after 2 seconds.
-    QtCore.QTimer.singleShot(2000, start_download)
+    # Start the download immediately
+    start_download()
 
 def set_app_icon(app, window):
     """
