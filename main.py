@@ -125,24 +125,40 @@ def parse_version(version_str):
 
 def check_for_update(current_version, repo_owner, repo_name):
     url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases"
+    
+    # If your repo is private, ensure token has "repo" scope. Otherwise "public_repo" is enough.
+    token = "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"
+
     headers = {
-        "Authorization": "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"
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "viprestore-updater"
     }
+    
+    logging.debug(f"Checking for update at: {url}")
+    logging.debug(f"Using headers: {headers}")
 
     try:
         response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        logging.debug(f"Response status: {response.status_code}")
+        logging.debug(f"Response text:\n{response.text}")
 
+        # If you get 404 here, it means GitHub's API didn't find the repo (or you have no permission).
+        # So keep an eye on whether the repo name or the token scope is correct.
+        response.raise_for_status()
+
+        data = response.json()
         if not data:
-            logging.debug("No releases found.")
+            logging.debug("No releases found (empty JSON).")
             return None
 
-        latest = data[0]  # newest release first
+        latest = data[0]
         latest_version = latest.get("tag_name", "").strip()
+
         if parse_version(latest_version) > parse_version(current_version):
             logging.debug(f"Update available: {latest_version} > {current_version}")
             return latest
+
         logging.debug("No update available.")
         return None
 
