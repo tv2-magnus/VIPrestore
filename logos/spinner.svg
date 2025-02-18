@@ -19,13 +19,13 @@
       type="rotate"
       from="0 50 50"
       to="360 50 50"
-      dur="1s"
+      dur="2.5s"
       repeatCount="indefinite"/>
     <animate
       attributeName="stroke-dashoffset"
-      values="251;100;251"
-      dur="1.6s"
+      values="251;-251"
+      dur="2.5s"
       repeatCount="indefinite"
-      keyTimes="0;0.5;1"/>
+      calcMode="linear"/>
   </path>
 </svg>
