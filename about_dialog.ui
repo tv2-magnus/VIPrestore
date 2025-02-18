@@ -10,9 +10,9 @@
     <widget class="QLabel" name="labelAbout">
      <property name="text">
       <string>
-&lt;h1&gt;My Application&lt;/h1&gt;
-&lt;p&gt;Version 1.0&lt;/p&gt;
-&lt;p&gt;Copyright © 2025&lt;/p&gt;
+      &lt;h1&gt;My Application&lt;/h1&gt;
+      &lt;p&gt;Version 1.0&lt;/p&gt;
+      &lt;p&gt;Copyright © 2025&lt;/p&gt;
       </string>
      </property>
      <property name="alignment">
