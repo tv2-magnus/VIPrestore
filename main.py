@@ -166,7 +166,7 @@ def download_update(update_info):
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Accept": "application/octet-stream"}
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        headers["Authorization"] = f"token {token}"
 
     # Set up the progress dialog.
     progress = QProgressDialog("Preparing...", "Cancel", 0, 100)
