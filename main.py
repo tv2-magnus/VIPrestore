@@ -112,14 +112,16 @@ def get_current_version():
         return "0.0.0"
 
 def parse_version(version_str):
-    """
-    Converts a version string (e.g. 'v1.2.3' or '1.2.3') into a tuple of integers.
-    """
-    try:
-        return tuple(int(part) for part in version_str.lstrip("v").split("."))
-    except Exception as e:
-        logging.error(f"Error parsing version string '{version_str}': {e}")
-        return (0, 0, 0)
+    version_str = version_str.lstrip("v")
+    parts = version_str.split("-")
+    main = parts[0]
+    build = parts[1] if len(parts) > 1 else None
+    
+    main_nums = [int(x) for x in main.split(".")]
+    if build and build.isdigit():
+        main_nums.append(int(build))
+        
+    return tuple(main_nums)
 
 def check_for_update(current_version, repo_owner, repo_name):
     load_dotenv()  # Loads .env variables
@@ -128,7 +130,7 @@ def check_for_update(current_version, repo_owner, repo_name):
     token = os.getenv("GITHUB_TOKEN")
     headers = {}
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        headers["Authorization"] = f"token {token}"
 
     try:
         response = requests.get(url, headers=headers, timeout=10)
