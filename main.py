@@ -897,9 +897,45 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     def showAbout(self):
+        def get_version():
+            """Reads the version from version.txt"""
+            try:
+                with open(resource_path("version.txt"), "r") as file:
+                    return file.read().strip()
+            except FileNotFoundError:
+                return "Unknown"
+
         dlg = QtWidgets.QDialog()
         uic.loadUi(resource_path("about_dialog.ui"), dlg)
+
+        # Set window title & fixed size for a polished look
+        dlg.setWindowTitle("About VIPrestore")
+        dlg.setFixedSize(400, 300)  # Adjust to fit contents
+
+        # Load the application icon
+        icon_path = resource_path("logos/viprestore_icon.png")
+        pixmap = QtGui.QPixmap(icon_path).scaled(100, 100, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
+
+        # Update QLabel for the logo
+        logo_label = dlg.findChild(QtWidgets.QLabel, "labelLogo")
+        if logo_label:
+            logo_label.setPixmap(pixmap)
+            logo_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        # Update version information
+        version = get_version()
+        label = dlg.findChild(QtWidgets.QLabel, "labelAbout")
+        if label:
+            about_text = f"""
+            <h1 style="color:#0078D7; font-size: 22px; font-weight: bold; margin-bottom: 5px;">VIPrestore</h1>
+            <p style="font-size: 14px; color: #555;">Version {version}</p>
+            <p style="font-size: 12px; color: #777; margin-top: 5px;">Copyright © 2025</p>
+            """
+            label.setText(about_text)
+            label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
         dlg.exec()
+
 
     def _onDetailsCellClicked(self, row: int, col: int):
         if col != 1:
