@@ -37,17 +37,65 @@ logging.basicConfig(
 )
 logging.debug("Application started")
 
-def create_splash_screen():
+def create_splash_screen(app):  # Accept the QApplication instance as parameter
     from PyQt6 import QtWidgets, QtGui, QtCore
-    splash_pix = QtGui.QPixmap(resource_path("splash.png"))
-    splash = QtWidgets.QSplashScreen(splash_pix, QtCore.Qt.WindowType.FramelessWindowHint)
-    splash.setMask(splash_pix.mask())  # Optional: for non-rectangular shapes
-    splash.showMessage(
-        "Loading, please wait...",
-        QtCore.Qt.AlignmentFlag.AlignBottom | QtCore.Qt.AlignmentFlag.AlignHCenter,
-        QtGui.QColor("white")
-    )
-    return splash
+    
+    # Create base widget
+    base = QtWidgets.QWidget()
+    base.setFixedSize(400, 300)
+    
+    # Create layout
+    layout = QtWidgets.QVBoxLayout(base)
+    layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+    layout.setSpacing(20)
+    
+    # Add logo
+    logo_label = QtWidgets.QLabel()
+    logo_pixmap = QtGui.QPixmap(resource_path("logos/viprestore_icon.png"))
+    logo_label.setPixmap(logo_pixmap.scaled(
+        150, 150,
+        QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+        QtCore.Qt.TransformationMode.SmoothTransformation
+    ))
+    logo_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(logo_label)
+    
+    # Add spinner GIF
+    spinner_label = QtWidgets.QLabel()
+    spinner_movie = QtGui.QMovie(resource_path("logos/spinner.gif"))
+    # Add debug checks
+    if not spinner_movie.isValid():
+        logger.debug("Spinner GIF failed to load!")
+    spinner_movie.setScaledSize(QtCore.QSize(32, 32))
+    spinner_label.setMinimumSize(32, 32)
+    spinner_label.setMovie(spinner_movie)
+    spinner_movie.start()
+    spinner_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+    # Add debug size check
+    logger.debug(f"Spinner label size: {spinner_label.size()}")
+    layout.addWidget(spinner_label)
+    
+    # Add loading text
+    loading_label = QtWidgets.QLabel("Loading, please wait...")
+    loading_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+    loading_label.setStyleSheet("""
+        QLabel {
+            color: #404040;
+            font-size: 14px;
+            font-family: Arial;
+            margin-top: 10px;
+        }
+    """)
+    layout.addWidget(loading_label)
+    
+    # Set background and create pixmap
+    base.setStyleSheet("background-color: white;")
+    pixmap = base.grab()
+    
+    # Create splash screen
+    splash = QtWidgets.QSplashScreen(pixmap, QtCore.Qt.WindowType.FramelessWindowHint)
+    
+    return splash, spinner_movie
 
 def get_current_version():
     """
@@ -1318,13 +1366,15 @@ class MainWindow(QtWidgets.QMainWindow):
 def main():
     logger.debug("Starting application and creating QApplication...")
     app = QtWidgets.QApplication(sys.argv)
-    # We do NOT call app.setQuitOnLastWindowClosed(False), so it uses the default (True).
-
+    
     # 1) Show the splash immediately
-    splash = create_splash_screen()
+    splash, spinner = create_splash_screen(app)
     splash.show()
     app.processEvents()
     logger.debug("Splash screen displayed.")
+    
+    # Store the start time
+    start_time = QtCore.QDateTime.currentDateTime()
 
     # 2) Create the main window in advance (but don't show it yet)
     logger.debug("Creating MainWindow instance (hidden).")
@@ -1339,36 +1389,47 @@ def main():
 
     set_app_icon(app, main_window)
 
-    # 3) Do the update check
-    logger.debug("Performing update check.")
-    current_version = get_current_version()
-    update_info = check_for_update(current_version, "magnusoverli", "VIPrestore")
-    if update_info:
-        latest_version = update_info.get("tag_name")
-        logger.debug(f"Update available: {latest_version} > {current_version}")
+    def perform_update_check():
+        # 3) Do the update check
+        logger.debug("Performing update check.")
+        current_version = get_current_version()
+        update_info = check_for_update(current_version, "magnusoverli", "VIPrestore")
+        if update_info:
+            latest_version = update_info.get("tag_name")
+            logger.debug(f"Update available: {latest_version} > {current_version}")
 
-        msg = QtWidgets.QMessageBox()
-        msg.setWindowTitle("Update Available")
-        msg.setText(f"A new version ({latest_version}) is available. Download and install now?")
-        msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes |
-                               QtWidgets.QMessageBox.StandardButton.No)
-        logger.debug("Showing update prompt...")
-        choice = msg.exec()
+            msg = QtWidgets.QMessageBox()
+            msg.setWindowTitle("Update Available")
+            msg.setText(f"A new version ({latest_version}) is available. Download and install now?")
+            msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes |
+                                QtWidgets.QMessageBox.StandardButton.No)
+            logger.debug("Showing update prompt...")
+            choice = msg.exec()
 
-        if choice == QtWidgets.QMessageBox.StandardButton.Yes:
-            # 4) User accepted => download and quit
-            logger.debug("User accepted. Downloading update...")
-            download_update(update_info)
-            logger.debug("Update initiated. Exiting soon.")
-            sys.exit(0)
+            if choice == QtWidgets.QMessageBox.StandardButton.Yes:
+                # 4) User accepted => download and quit
+                logger.debug("User accepted. Downloading update...")
+                download_update(update_info)
+                logger.debug("Update initiated. Exiting soon.")
+                sys.exit(0)
+            else:
+                logger.debug("User declined the update. Proceed to show the main window.")
         else:
-            logger.debug("User declined the update. Proceed to show the main window.")
-    else:
-        logger.debug("No update found or update check failed. Showing main window.")
+            logger.debug("No update found or update check failed. Showing main window.")
 
-    # 5) If user declined update or no update found, hide splash and show main window
-    splash.finish(main_window)
-    main_window.show()
+        # 5) If user declined update or no update found, show main window
+        main_window.show()
+        splash.finish(main_window)
+
+    # Calculate elapsed time and ensure minimum display time
+    elapsed = start_time.msecsTo(QtCore.QDateTime.currentDateTime())
+    min_splash_time = 2000  # Minimum 2 seconds
+    
+    if elapsed < min_splash_time:
+        remaining = min_splash_time - elapsed
+        QtCore.QTimer.singleShot(remaining, perform_update_check)
+    else:
+        perform_update_check()
 
     # 6) Use the standard approach for PyQt event loop
     logger.debug("Starting the standard Qt event loop with app.exec()")
