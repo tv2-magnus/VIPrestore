@@ -23,6 +23,12 @@ class SystemsEditorDialog(QtWidgets.QDialog):
         left_layout = QtWidgets.QVBoxLayout()
         hlayout.addLayout(left_layout, 1)
         self.list_widget = QtWidgets.QListWidget()
+
+        # Enable drag-and-drop reordering
+        self.list_widget.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        self.list_widget.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+        self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+
         left_layout.addWidget(self.list_widget)
         btn_layout = QtWidgets.QHBoxLayout()
         left_layout.addLayout(btn_layout)
@@ -48,6 +54,7 @@ class SystemsEditorDialog(QtWidgets.QDialog):
 
         # Connect signals
         self.list_widget.currentRowChanged.connect(self.on_selection_changed)
+        self.list_widget.model().rowsMoved.connect(self.update_systems_order)  # Track reordering
         self.edit_name.textEdited.connect(self.on_name_edited)
         self.edit_url.textEdited.connect(self.on_url_edited)
         self.btn_add.clicked.connect(self.add_system)
@@ -120,6 +127,17 @@ class SystemsEditorDialog(QtWidgets.QDialog):
         if reply == QtWidgets.QMessageBox.StandardButton.Yes:
             del self.systems[row]
             self.refresh_list()
+
+    def update_systems_order(self):
+        """Update self.systems list order when user drags and drops items."""
+        new_order = []
+        for index in range(self.list_widget.count()):
+            item_text = self.list_widget.item(index).text()
+            for system in self.systems:
+                if system["name"] == item_text:
+                    new_order.append(system)
+                    break
+        self.systems = new_order
 
     def save_and_accept(self):
         try:
