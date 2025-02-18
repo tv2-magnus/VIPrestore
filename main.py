@@ -1366,6 +1366,8 @@ class MainWindow(QtWidgets.QMainWindow):
 def main():
     logger.debug("Starting application and creating QApplication...")
     app = QtWidgets.QApplication(sys.argv)
+    loop = QEventLoop(app)
+    asyncio.set_event_loop(loop)
     
     # 1) Show the splash immediately
     splash, spinner = create_splash_screen(app)
@@ -1376,21 +1378,19 @@ def main():
     # Store the start time
     start_time = QtCore.QDateTime.currentDateTime()
 
-    # 2) Create the main window in advance (but don't show it yet)
+    # 2) Create the main window (hidden)
     logger.debug("Creating MainWindow instance (hidden).")
     main_window = MainWindow()
 
-    # (Optional) Load custom fonts or do any other app-wide setup here
+    # (Optional) Load custom fonts
     loaded_fonts = load_custom_fonts()
     if 'regular' in loaded_fonts:
         app.setFont(QtGui.QFont(loaded_fonts['regular'], 10))
     if 'bold' in loaded_fonts:
         main_window.set_bold_font_family(loaded_fonts['bold'])
-
     set_app_icon(app, main_window)
 
     def perform_update_check():
-        # 3) Do the update check
         logger.debug("Performing update check.")
         current_version = get_current_version()
         update_info = check_for_update(current_version, "magnusoverli", "VIPrestore")
@@ -1402,12 +1402,11 @@ def main():
             msg.setWindowTitle("Update Available")
             msg.setText(f"A new version ({latest_version}) is available. Download and install now?")
             msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes |
-                                QtWidgets.QMessageBox.StandardButton.No)
+                                   QtWidgets.QMessageBox.StandardButton.No)
             logger.debug("Showing update prompt...")
             choice = msg.exec()
 
             if choice == QtWidgets.QMessageBox.StandardButton.Yes:
-                # 4) User accepted => download and quit
                 logger.debug("User accepted. Downloading update...")
                 download_update(update_info)
                 logger.debug("Update initiated. Exiting soon.")
@@ -1417,23 +1416,21 @@ def main():
         else:
             logger.debug("No update found or update check failed. Showing main window.")
 
-        # 5) If user declined update or no update found, show main window
         main_window.show()
         splash.finish(main_window)
 
-    # Calculate elapsed time and ensure minimum display time
+    # Ensure the splash is visible for at least 2 seconds
     elapsed = start_time.msecsTo(QtCore.QDateTime.currentDateTime())
     min_splash_time = 2000  # Minimum 2 seconds
-    
     if elapsed < min_splash_time:
         remaining = min_splash_time - elapsed
         QtCore.QTimer.singleShot(remaining, perform_update_check)
     else:
         perform_update_check()
 
-    # 6) Use the standard approach for PyQt event loop
-    logger.debug("Starting the standard Qt event loop with app.exec()")
-    sys.exit(app.exec())
+    logger.debug("Starting the event loop.")
+    with loop:
+        loop.run_forever()
 
 if __name__ == "__main__":
     main()
