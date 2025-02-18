@@ -124,13 +124,10 @@ def parse_version(version_str):
     return tuple(main_nums)
 
 def check_for_update(current_version, repo_owner, repo_name):
-    load_dotenv()  # Loads .env variables
-
     url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases"
-    token = os.getenv("GITHUB_TOKEN")
-    headers = {}
-    if token:
-        headers["Authorization"] = f"token {token}"
+    headers = {
+        "Authorization": "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"
+    }
 
     try:
         response = requests.get(url, headers=headers, timeout=10)
