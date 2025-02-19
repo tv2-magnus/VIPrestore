@@ -346,41 +346,49 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Add this right after super().__init__()
         self.bold_font_family = None  # Will be set from main()
-        
+
         # Clean up menu bar: create a new organized menu bar for improved UX
         menubar = self.menuBar()
         menubar.clear()
-        
+
         # Create menus
         self.menuFile = menubar.addMenu("File")
         self.menuTools = menubar.addMenu("Tools")
         self.menuHelp = menubar.addMenu("Help")
-        
+
         # Create actions with keyboard shortcuts
         self.actionLogin = QtGui.QAction("Login", self)
         self.actionLogin.setShortcut("Ctrl+L")
-        
+
         self.actionLogout = QtGui.QAction("Logout", self)
         self.actionLogout.setShortcut("Ctrl+Shift+L")
-        
+
         self.actionLoadServices = QtGui.QAction("Load Services", self)
         self.actionLoadServices.setShortcut("Ctrl+O")
-        
+
         self.actionSaveSelectedServices = QtGui.QAction("Save Selected Services", self)
         self.actionSaveSelectedServices.setShortcut("Ctrl+S")
-        
+
         self.actionExit = QtGui.QAction("Exit", self)
         self.actionExit.setShortcut("Ctrl+Q")
-        
+
         self.actionRefresh = QtGui.QAction("Refresh Services", self)
         self.actionRefresh.setShortcut("F5")
-        
+
         self.actionEditSystems = QtGui.QAction("Edit Systems", self)
         self.actionEditSystems.setShortcut("Ctrl+E")
-        
+
         self.actionAbout = QtGui.QAction("About", self)
         self.actionAbout.setShortcut("F1")
-        
+
+        # --- Cancel Services Action ---
+        self.actionCancelSelectedServices = QtGui.QAction("Cancel Selected Services", self)
+        self.actionCancelSelectedServices.setShortcut("Ctrl+D")  # Or another shortcut
+        self.actionCancelSelectedServices.setEnabled(False)  # Initially disabled
+        self.menuTools.addAction(self.actionCancelSelectedServices)  # Add to Tools menu
+        self.actionCancelSelectedServices.triggered.connect(lambda: asyncio.create_task(self.cancelSelectedServices())) #Connect
+        # --- End Cancel Services Action ---
+
         # Add actions to File menu with grouping separators
         self.menuFile.addAction(self.actionLogin)
         self.menuFile.addAction(self.actionLogout)
@@ -389,16 +397,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.menuFile.addAction(self.actionSaveSelectedServices)
         self.menuFile.addSeparator()
         self.menuFile.addAction(self.actionExit)
-        
+
         # Add actions to Tools menu (with a separator between groups)
         self.menuTools.addAction(self.actionRefresh)
         self.menuTools.addSeparator()
         self.menuTools.addAction(self.actionEditSystems)
-        
+        # Separator is already placed, no action needed here.
+
         # Add actions to Help menu with a separator
         self.menuHelp.addAction(self.actionAbout)
         self.menuHelp.addSeparator()
-        
+
         # Connect Action Signals
         self.actionLogin.triggered.connect(lambda: asyncio.create_task(self.doLogin()))
         self.actionLogout.triggered.connect(self.doLogout)
@@ -408,19 +417,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.actionRefresh.triggered.connect(lambda: asyncio.create_task(self.refreshServicesAsync()))
         self.actionEditSystems.triggered.connect(self.editSystems)
         self.actionAbout.triggered.connect(self.showAbout)
-        
+
         self.setSplitterPlacement()
-        
+
         # Instance Variables
         self.client = None
         self._profile_mapping = {}
         self._endpoint_map = {}
         self.profileCheckBoxes = []
         self.currentServices = {}
-        
+
         # Executor for blocking calls
         self.executor = ThreadPoolExecutor()
-        
+
         # Configure Service View Table
         self.tableViewServices.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tableViewServices.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -428,7 +437,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tableViewServices.setAlternatingRowColors(True)
         self.tableViewServices.setSortingEnabled(True)
         self.tableViewServices.clicked.connect(self.onServiceClicked)
-        
+
         # Setup Model and Filter for Services
         self.serviceModel = QtGui.QStandardItemModel(self)
         self.filterProxy = ServicesFilterProxy(self)
@@ -443,19 +452,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dateTimeEditEnd.dateTimeChanged.connect(self.onTimeFilterChanged)
         self.checkBoxEnableTimeFilter.stateChanged.connect(self.onTimeFilterChanged)
         self.buttonResetFilters.clicked.connect(self.onResetFilters)
-        
+
         # Configure Profile Filters Area
         self.scrollAreaProfilesFilters.setWidgetResizable(True)
         self.layoutProfiles = self.verticalLayoutProfilesList
         self.layoutProfiles.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        
+
         # Set Default Date/Time for Filters (today's 00:00 -> 23:59)
         today = QtCore.QDate.currentDate()
         start_dt = QtCore.QDateTime(today, QtCore.QTime(0, 0, 0))
         end_dt = QtCore.QDateTime(today, QtCore.QTime(23, 59, 59))
         self.dateTimeEditStart.setDateTime(start_dt)
         self.dateTimeEditEnd.setDateTime(end_dt)
-        
+
         # Configure Service Details Table
         self.tableWidgetServiceDetails.setColumnCount(2)
         self.tableWidgetServiceDetails.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -479,7 +488,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sessionTimer.setInterval(30000)
         self.sessionTimer.timeout.connect(self.checkSession)
         self.sessionTimer.start()
-        
+
+        # --- Context Menu Setup ---
+        self.tableViewServices.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tableViewServices.customContextMenuRequested.connect(self.showContextMenu)
+        # --- End Context Menu Setup ---
+
         # --- Status Bar Setup ---
         status_bar = QtWidgets.QStatusBar(self)
         self.setStatusBar(status_bar)
@@ -525,6 +539,133 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Set Initial Connection Status
         self.updateConnectionStatus(False)
+
+    def showContextMenu(self, position):
+        # Create a context menu
+        context_menu = QtWidgets.QMenu(self)
+
+        # Create a "Save Selected" action for the context menu
+        save_action = QtGui.QAction("Save Selected Services", self)
+        save_action.triggered.connect(self.saveSelectedServices)  # Connect to your existing method
+        context_menu.addAction(save_action)
+
+        # Check if there's a valid selection
+        indexes = self.tableViewServices.selectionModel().selectedRows()
+        if not indexes:
+            save_action.setEnabled(False)
+
+        # Show the context menu at the mouse position
+        context_menu.exec(self.tableViewServices.viewport().mapToGlobal(position))
+
+    async def cancelSelectedServices(self):
+        """Cancels the currently selected services."""
+        indexes = self.tableViewServices.selectionModel().selectedRows()
+        if not indexes:
+            QtWidgets.QMessageBox.information(
+                self,
+                "No Selection",
+                "Please select at least one service to cancel."
+            )
+            return
+
+        # Confirm with the user
+        confirm = QtWidgets.QMessageBox.question(
+            self,
+            "Confirm Cancellation",
+            "Are you sure you want to cancel the selected service(s)?",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No  # Default button
+        )
+        if confirm != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        entries = []
+        for index in indexes:
+            # Get the service ID and revision.  Crucially, use filterProxy.index()
+            # to get the *mapped* index in the underlying model.
+            service_id = self.filterProxy.index(index.row(), 0).data()
+            service_data = self.currentServices.get(service_id)
+            if not service_data: # Safety check, in case service list not updated
+                QtWidgets.QMessageBox.critical(self, "Error", f"Service {service_id} not found.")
+                return
+            
+            booking_data = service_data.get("booking")
+            if not booking_data:
+                QtWidgets.QMessageBox.critical(self, "Error", f"Could not find booking data for service {service_id}.")
+                return
+
+            revision = booking_data.get("rev")
+            if revision is None:  # Another safety check
+                QtWidgets.QMessageBox.critical(self, "Error", f"Could not retrieve revision for service {service_id}")
+                return
+
+            entries.append({"id": service_id, "rev": revision})
+
+        payload = {
+            "header": {"id": 1},
+            "data": {
+                "conflictStrategy": 0,  # Or another strategy if you prefer
+                "bookingStrategy": 2,   # Best effort
+                "entries": entries
+            }
+        }
+
+        loop = asyncio.get_running_loop()
+        try:
+            # Use _request (as your other methods do) for consistency.
+            response = await loop.run_in_executor(
+                self.executor,
+                lambda: self.client._request(
+                    "POST",
+                    f"{self.client.base_url}/api/cancelModernServices",
+                    headers={"Content-Type": "application/json"},
+                    json=payload
+                )
+            )
+            response_json = response.json()
+
+            # --- Response Handling ---
+            if not response_json['header']['ok']:
+                QtWidgets.QMessageBox.critical(self, "Cancel Error",
+                                               f"API call failed: {response_json['header']['msg']}")
+                return
+
+            data = response_json.get("data", {})
+            entries_link = data.get("entriesLink", [])
+            bookresult = data.get("bookresult", {})
+            details = bookresult.get("details", {})
+            
+            success_count = 0
+            failed_services = []
+
+            for link in entries_link:
+                service_id = link.get("id")
+                if link.get("error") is None and service_id:
+                    detail = details.get(service_id, {})
+                    if detail.get("status") == 0:  #0 is success
+                        success_count += 1
+                    else:
+                        failed_services.append(f"{service_id}: Status {detail.get('status')}")
+                else:
+                    error_msg = link.get("error", "Unknown error")
+                    failed_services.append(f"{service_id if service_id else 'Unknown'}: {error_msg}")
+            
+            total_attempted = len(entries)
+            failure_count = len(failed_services)
+            
+            msg = f"Successfully cancelled {success_count} of {total_attempted} service(s).\n"
+            if failed_services:
+                msg += f"Failed to cancel:\n" + "\n".join(failed_services)
+
+            QtWidgets.QMessageBox.information(self, "Cancellation Results", msg)
+            # --- End Response Handling ---
+
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Cancel Error", str(e))
+        finally:
+            # Always refresh, even if there's an error
+            await self.refreshServicesAsync()
 
     def closeEvent(self, event: QtGui.QCloseEvent):
         """
@@ -896,18 +1037,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 elif self.server_url.startswith("http://"):
                     self.frameConnectionIndicator.setStyleSheet("background-color: red;")
                     self.labelConnectionStatusText.setText("Connected (HTTP, not secure)")
-                else:
+                else: # Added this for completeness
                     self.frameConnectionIndicator.setStyleSheet("background-color: green;")
-                    self.labelConnectionStatusText.setText("Connected")
-            else:
-                self.frameConnectionIndicator.setStyleSheet("background-color: green;")
-                self.labelConnectionStatusText.setText("Connected")
+                    self.labelConnectionStatusText.setText("Connected (Unknown Protocol)")
+            else:  # Handle case where server_url is not set, but connected is True
+                self.frameConnectionIndicator.setStyleSheet("background-color: yellow;")  # Distinct color
+                self.labelConnectionStatusText.setText("Connected (Server URL not set)")
         else:
             self.frameConnectionIndicator.setStyleSheet("background-color: grey;")
             self.labelConnectionStatusText.setText("No Connection")
         
         self.actionLogout.setEnabled(connected)
         self.actionSaveSelectedServices.setEnabled(connected)
+        self.actionCancelSelectedServices.setEnabled(connected) # Important: Enable/disable the new action
         
         # Show or hide user role and service count based on connection state.
         self.labelUserInfo.setVisible(connected)
