@@ -1,5 +1,4 @@
-from PyQt6.QtCore import Qt
-from PyQt6 import QtWidgets
+from PyQt6 import QtWidgets, QtCore
 
 class LoadServicesDialog(QtWidgets.QDialog):
    def __init__(self, services, parent=None):
@@ -9,6 +8,7 @@ class LoadServicesDialog(QtWidgets.QDialog):
        fromLabel, toLabel, and profileName.
        """
        super().__init__(parent)
+       self.resize(600, 400)
        self.setWindowTitle("Confirm Service Creation")
        self.setModal(True)
        self.services = services 
