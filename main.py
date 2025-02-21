@@ -22,6 +22,8 @@ import subprocess
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
+from map import create_network_map
+from PyQt6 import QtWebEngineWidgets
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -540,6 +542,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # Set Initial Connection Status
         self.updateConnectionStatus(False)
 
+        # --- Context Menu for Details Table ---
+        self.tableWidgetServiceDetails.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tableWidgetServiceDetails.customContextMenuRequested.connect(self.showDetailsContextMenu)
+        # --- End Context Menu for Details Table ---
+
     def showContextMenu(self, position):
         # Create a context menu
         context_menu = QtWidgets.QMenu(self)
@@ -549,6 +556,12 @@ class MainWindow(QtWidgets.QMainWindow):
         save_action.triggered.connect(self.saveSelectedServices)  # Connect to your existing method
         context_menu.addAction(save_action)
 
+        # --- Copy Cell Action ---
+        copy_action = QtGui.QAction("Copy Cell", self)
+        copy_action.triggered.connect(lambda: self.copyCell(self.tableViewServices))
+        context_menu.addAction(copy_action)
+        # --- End Copy Cell Action ---
+
         # Check if there's a valid selection
         indexes = self.tableViewServices.selectionModel().selectedRows()
         if not indexes:
@@ -556,6 +569,110 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Show the context menu at the mouse position
         context_menu.exec(self.tableViewServices.viewport().mapToGlobal(position))
+
+    def showDetailsContextMenu(self, position):
+            """Shows the context menu for the service details table."""
+            context_menu = QtWidgets.QMenu(self)
+
+            # --- Copy Cell Action (Exists) ---
+            copy_action = QtGui.QAction("Copy Cell", self)
+            copy_action.triggered.connect(lambda: self.copyCell(self.tableWidgetServiceDetails))
+            context_menu.addAction(copy_action)
+            # --- End Copy Cell Action ---
+
+            # Get the item at the clicked position
+            index = self.tableWidgetServiceDetails.indexAt(position)
+            if index.isValid():
+                item = self.tableWidgetServiceDetails.item(index.row(), 0)  # Get item from the *first* column
+                if item and item.text() == "res":
+                    show_map_action = QtGui.QAction("Show Map", self)
+                    show_map_action.triggered.connect(self.show_map) # Connect to show_map
+                    context_menu.addAction(show_map_action)
+
+            # Show the context menu at the global position
+            context_menu.exec(self.tableWidgetServiceDetails.viewport().mapToGlobal(position))
+
+    def show_map(self):
+        """Displays the network map in a dialog."""
+        # Get selected row from details table (should be the "res" row)
+        selected_indexes = self.tableWidgetServiceDetails.selectedIndexes()
+        if not selected_indexes:
+            return  # No row selected
+
+        index = selected_indexes[0]
+        res_data_str = self.tableWidgetServiceDetails.model().data(index, QtCore.Qt.ItemDataRole.DisplayRole)
+
+        try:
+            res_data = json.loads(res_data_str)
+        except json.JSONDecodeError:
+            QtWidgets.QMessageBox.critical(self, "Map Error", "Invalid JSON data in 'res' field.")
+            return
+
+        # --- Prepare Additional Data for the Map ---
+        endpoint_map = self._endpoint_map  # Maps device IDs to labels
+
+        # Build services_data from self.currentServices
+        services_data = {}
+        for service_id, service in self.currentServices.items():
+            booking = service.get("booking", {})
+            services_data[service_id] = {
+                "profile_name": self._profile_mapping.get(booking.get("profile", ""), "N/A"),
+                "createdBy": booking.get("createdBy", "N/A"),
+                "allocationState": booking.get("allocationState", "N/A"),
+                "start": self._format_timestamp(booking.get("start")),
+                "end": self._format_timestamp(booking.get("end")),
+            }
+
+        # --- Generate the map HTML ---
+        html_string = create_network_map(res_data, parent_widget=self, endpoint_map=endpoint_map, services_data=services_data)
+        
+        if not html_string:
+            return  # Error message already shown in create_network_map
+
+        # --- Create the dialog and web view ---
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Network Map")
+        dialog.resize(800, 600)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        web_view = QtWebEngineWidgets.QWebEngineView(dialog)
+        web_view.setHtml(html_string)  # Load the HTML string
+        layout.addWidget(web_view)
+
+        # Add a close button
+        close_button = QtWidgets.QPushButton("Close", dialog)
+        close_button.clicked.connect(dialog.close)
+        layout.addWidget(close_button)
+
+        dialog.exec()
+
+    def _format_timestamp(self, timestamp):
+        """Converts a timestamp into a readable date format."""
+        if not timestamp:
+            return "N/A"
+        try:
+            dt_val = datetime.fromtimestamp(int(timestamp) / 1000)
+            return dt_val.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return str(timestamp)
+
+    def copyCell(self, table_widget):
+        """Copies the content of the currently selected cell to the clipboard."""
+        if table_widget == self.tableViewServices:
+            # Handle service table
+            selected_indexes = table_widget.selectionModel().selectedIndexes()
+            if selected_indexes:
+                index = selected_indexes[0]
+                # Use filterProxy for service table
+                text = self.filterProxy.data(index, QtCore.Qt.ItemDataRole.DisplayRole)
+                QtWidgets.QApplication.clipboard().setText(str(text))
+
+        elif table_widget == self.tableWidgetServiceDetails:
+             # Handle details table
+            selected_indexes = table_widget.selectedIndexes()
+            if selected_indexes:
+                index = selected_indexes[0]
+                text = table_widget.model().data(index, QtCore.Qt.ItemDataRole.DisplayRole)
+                QtWidgets.QApplication.clipboard().setText(str(text))
 
     async def cancelSelectedServices(self):
         """Cancels the currently selected services."""
