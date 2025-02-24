@@ -162,104 +162,158 @@ def check_for_update(current_version, repo_owner, repo_name):
         logging.error(f"Update check failed: {e}")
         return None
 
-def download_update(update_info):
-    import sys
-    from PyQt6.QtWidgets import QMessageBox, QProgressDialog
-    from PyQt6.QtCore import QTimer, Qt
+def human_readable_size(size_in_bytes: int) -> str:
+    """Helper to convert bytes into a more readable string."""
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(size_in_bytes)
+    idx = 0
+    while size >= 1024 and idx < len(units) - 1:
+        size /= 1024
+        idx += 1
+    return f"{size:.2f} {units[idx]}"
 
-    headers = {
-        "Accept": "application/octet-stream",
-        "User-Agent": "viprestore-updater"
-    }
+class DownloadWorker(QtCore.QObject):
+    """Worker object that handles the file download in a separate thread."""
+
+    progressChanged = QtCore.pyqtSignal(int)              # Emits the percent complete
+    statusTextChanged = QtCore.pyqtSignal(str)            # Emits the text for the progress label
+    finished = QtCore.pyqtSignal(str)                     # Emits the file path on successful download
+    errorOccurred = QtCore.pyqtSignal(str)                # Emits the error message on failure
+
+    def __init__(self, download_url: str, filename: str, headers: dict, parent=None):
+        super().__init__(parent)
+        self.download_url = download_url
+        self.filename = filename
+        self.headers = headers
+        self._cancelled = False  # Flag to handle cancel
+
+    @QtCore.pyqtSlot()
+    def start_download(self):
+        """Performs the actual download, chunk by chunk."""
+        try:
+            temp_dir = tempfile.gettempdir()
+            file_path = os.path.join(temp_dir, self.filename)
+
+            response = requests.get(self.download_url, stream=True, headers=self.headers, timeout=30)
+            response.raise_for_status()
+
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded_size = 0
+
+            chunk_size = 1024 * 1024  # 1MB chunk size
+
+            with open(file_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if self._cancelled:
+                        # Delete partial file if user canceled
+                        f.close()
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        return
+                    if chunk:
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
+                        if total_size > 0:
+                            percent = int((downloaded_size / total_size) * 100)
+                            self.progressChanged.emit(percent)
+                            self.statusTextChanged.emit(
+                                f"Downloading... {human_readable_size(downloaded_size)} of {human_readable_size(total_size)}"
+                            )
+
+            self.progressChanged.emit(100)
+            self.finished.emit(file_path)
+
+        except Exception as e:
+            logging.error(f"Error during download: {e}")
+            self.errorOccurred.emit(str(e))
+
+    def cancel_download(self):
+        """Sets a flag so the download loop can stop."""
+        self._cancelled = True
+
+def download_update(update_info):
+    """
+    Asynchronously download the latest release asset from GitHub.
+    Creates a progress dialog that remains responsive while the download runs
+    in another thread, and handles cancel operations gracefully.
+    """
 
     assets = update_info.get("assets", [])
     if not assets:
-        QMessageBox.critical(None, "Update Error", "No downloadable assets found in the latest release.")
+        QtWidgets.QMessageBox.critical(None, "Update Error", "No downloadable assets found in the latest release.")
         return
 
     asset = assets[0]
     asset_api_url = asset.get("url")
     filename = asset.get("name")
 
-    progress = QProgressDialog("Preparing...", "Cancel", 0, 100)
+    headers = {
+        "Accept": "application/octet-stream",
+        "User-Agent": "viprestore-updater"
+    }
+
+    # Create a progress dialog
+    progress = QtWidgets.QProgressDialog("Initializing download...", "Cancel", 0, 100)
     progress.setWindowTitle("Downloading Update")
-    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    # If you have an icon for the window, set it here:
+    # progress.setWindowIcon(QtGui.QIcon("path/to/your/icon.png"))
+    progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
     progress.setMinimumDuration(0)
     progress.setValue(0)
     progress.show()
 
-    logging.debug("Download update initiated.")
-    logging.debug(f"Asset URL: {asset_api_url}")
-    logging.debug(f"Filename: {filename}")
+    # Force the dialog to repaint before starting the thread
+    QtWidgets.QApplication.processEvents()
 
-    dots = 0
-    def update_dots():
-        nonlocal dots
-        dots = (dots + 1) % 4
-        text = f"Preparing{'.' * dots}"
-        progress.setLabelText(text)
-        logging.debug(f"Preparing animation updated: {text}")
+    # Create worker and thread
+    worker = DownloadWorker(asset_api_url, filename, headers)
+    thread = QtCore.QThread()
+    worker.moveToThread(thread)
 
-    timer = QTimer()
-    timer.timeout.connect(update_dots)
-    timer.start(500)
-    progress._update_timer = timer
+    # Connect signals
+    worker.progressChanged.connect(progress.setValue)
+    worker.statusTextChanged.connect(progress.setLabelText)
+    worker.errorOccurred.connect(lambda msg: handle_download_error(msg, progress, thread))
+    worker.finished.connect(lambda path: handle_download_finished(path, progress, thread))
 
-    temp_dir = tempfile.gettempdir()
-    file_path = os.path.join(temp_dir, filename)
-    logging.debug(f"Temporary file path: {file_path}")
+    # Cancel button should signal the worker to abort
+    def cancel_pressed():
+        worker.cancel_download()
+        progress.setLabelText("Cancelling...")
 
-    def start_download():
-        timer.stop()
-        progress.setLabelText("Downloading update...")
-        logging.debug("Starting actual download.")
-        try:
-            response = requests.get(asset_api_url, stream=True, headers=headers, timeout=30)
-            response.raise_for_status()
+    progress.canceled.connect(cancel_pressed)
 
-            content_length = int(response.headers.get('content-length', 0))
-            logging.debug(f"Content length: {content_length} bytes")
+    # When the thread starts, call the worker's start_download()
+    thread.started.connect(worker.start_download)
 
-            downloaded_size = 0
-            with open(file_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if progress.wasCanceled():
-                        logging.debug("Download cancelled by user.")
-                        f.close()
-                        os.remove(file_path)
-                        return
-                    if chunk:
-                        f.write(chunk)
-                        downloaded_size += len(chunk)
-                        logging.debug(f"Downloaded {downloaded_size} of {content_length} bytes")
-                        if content_length:
-                            percent = int((downloaded_size / content_length) * 100)
-                            progress.setValue(percent)
-                            progress.setLabelText(
-                                f"Downloading update... {percent}%\n({downloaded_size}/{content_length} bytes)"
-                            )
-            progress.setValue(100)
-            logging.debug("Download complete.")
-            reply = QMessageBox.question(
-                None,
-                "Update Downloaded",
-                "Update has been downloaded. Install it now?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            logging.debug(f"User selected: {'Yes' if reply == QMessageBox.StandardButton.Yes else 'No'}")
-            if reply == QMessageBox.StandardButton.Yes:
-                logging.debug("Launching the downloaded update.")
-                subprocess.Popen([file_path], shell=True)
-                QtWidgets.QApplication.quit()
-                sys.exit(0)
-        except Exception as e:
-            logging.error(f"Error during download: {e}")
-            QMessageBox.critical(None, "Update Error", f"Failed to download and run update: {e}")
-            if os.path.exists(file_path):
-                os.remove(file_path)
+    # Start the thread
+    thread.start()
 
-    # Start the download immediately
-    start_download()
+def handle_download_error(error_message: str, progress_dialog: QtWidgets.QProgressDialog, thread: QtCore.QThread):
+    """Helper: show error and clean up thread."""
+    QtWidgets.QMessageBox.critical(None, "Update Error", f"Download failed: {error_message}")
+    progress_dialog.close()
+    thread.quit()
+    thread.wait()
+
+def handle_download_finished(file_path: str, progress_dialog: QtWidgets.QProgressDialog, thread: QtCore.QThread):
+    """Helper: handle successful download, show prompt to install."""
+    progress_dialog.setValue(100)
+    progress_dialog.close()
+    thread.quit()
+    thread.wait()
+
+    reply = QtWidgets.QMessageBox.question(
+        None,
+        "Update Downloaded",
+        "Update has been downloaded. Install it now?",
+        QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
+    )
+    if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+        logging.debug("Launching the downloaded update.")
+        subprocess.Popen([file_path], shell=True)
+        QtWidgets.QApplication.quit()
+        sys.exit(0)
 
 def set_app_icon(app, window):
     """
@@ -1711,20 +1765,22 @@ def main():
             msg.setWindowTitle("Update Available")
             msg.setText(f"A new version ({latest_version}) is available. Download and install now?")
             msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes |
-                                   QtWidgets.QMessageBox.StandardButton.No)
+                                QtWidgets.QMessageBox.StandardButton.No)
             logger.debug("Showing update prompt...")
             choice = msg.exec()
 
             if choice == QtWidgets.QMessageBox.StandardButton.Yes:
                 logger.debug("User accepted. Downloading update...")
                 download_update(update_info)
-                logger.debug("Update initiated. Exiting soon.")
-                sys.exit(0)
-            else:
-                logger.debug("User declined the update. Proceed to show the main window.")
+                # IMPORTANT: return immediately so we do NOT show the main window
+                return
+
+            # If user declined, proceed with normal launch
+            logger.debug("User declined the update. Proceed to show the main window.")
         else:
             logger.debug("No update found or update check failed. Showing main window.")
 
+        # Show the main window only if no update or user declined
         main_window.show()
         splash.finish(main_window)
 
