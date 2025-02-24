@@ -16,10 +16,14 @@ class VideoIPathClient:
         self.password: Optional[str] = None
 
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """
+        Improved error handling to give friendlier messages about possible causes of 400/401, etc.
+        """
         try:
             resp = self.session.request(method, url, **kwargs)
             resp.raise_for_status()
             return resp
+
         except requests.exceptions.SSLError:
             warnings.warn("SSL verification failed, retrying without certificate verification.", RuntimeWarning)
             self.session.verify = False
@@ -33,32 +37,66 @@ class VideoIPathClient:
         except requests.exceptions.ConnectTimeout:
             raise VideoIPathClientError("Connection timed out while trying to reach the server.")
 
-        except requests.exceptions.ConnectionError:
-            raise VideoIPathClientError("Failed to connect to the server.")
+        except requests.exceptions.ConnectionError as ce:
+            # Sometimes a certificate error is reported as a ConnectionError if the server forcibly resets.
+            raise VideoIPathClientError(
+                "Failed to connect to the server. Possibly a certificate mismatch or unreachable endpoint."
+            ) from ce
 
         except requests.exceptions.HTTPError as http_err:
-            raise VideoIPathClientError(f"HTTP error: {http_err.response.status_code} {http_err.response.reason}") from http_err
+            code = http_err.response.status_code
+            # Provide more details for specific codes:
+            if code == 400:
+                # Often means the request is invalid for that server, or additional authentication is required.
+                raise VideoIPathClientError(
+                    f"HTTP 400 Bad Request. Please check if the server requires a client certificate, "
+                    f"or if the request payload is incorrect. Original error: {http_err}"
+                ) from http_err
+            elif code == 401:
+                # Unauthenticated or wrong password
+                raise VideoIPathClientError("401 Unauthorized. Check credentials or token.") from http_err
+            elif code == 403:
+                # Forbidden: credentials recognized but not allowed for that resource
+                raise VideoIPathClientError("403 Forbidden. The server denied access.") from http_err
+            else:
+                raise VideoIPathClientError(
+                    f"HTTP error {code} ({http_err.response.reason}): {http_err}"
+                ) from http_err
 
         except requests.exceptions.RequestException as req_exc:
+            # Generic fallback
             raise VideoIPathClientError(f"Request failed: {req_exc}") from req_exc
 
     def login(self, username: str, password: str) -> None:
+        """
+        Enhanced login to clarify potential 400 vs. 401 scenarios.
+        """
         url = f"{self.base_url}/api/_session"
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         data = f"name={username}&password={password}"
-        resp = self._request("POST", url, headers=headers, data=data)
+
+        try:
+            resp = self._request("POST", url, headers=headers, data=data)
+        except VideoIPathClientError as e:
+            # If we specifically got a '400' from the server, the user might be hitting
+            # an endpoint that needs a special handshake (like a client certificate).
+            # Just re-raise the error message for clarity:
+            raise VideoIPathClientError(f"Login attempt failed: {e}") from e
+
         try:
             result = resp.json()
         except Exception as err:
-            raise VideoIPathClientError(f"Invalid JSON response: {err}")
+            raise VideoIPathClientError(f"Invalid JSON response during login: {err}")
+
         if not result.get("ok"):
             details = result.get("error") or result.get("msg") or str(result)
             raise VideoIPathClientError(f"Login failed: {details}")
+
         token = self.session.cookies.get("XSRF-TOKEN")
         if token:
             self.xsrf_token = token
             self.session.headers.update({"X-XSRF-TOKEN": token})
-        # Store credentials for later use in GET requests
+
         self.username = username
         self.password = password
 

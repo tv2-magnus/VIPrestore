@@ -1173,16 +1173,8 @@ class MainWindow(QtWidgets.QMainWindow):
         await self.create_services_from_file(services, selected_ids)
 
     async def create_services_from_file(self, services: dict, selected_ids: set):
-        """
-        Creates services using the modern API endpoint /api/setModernServices.
-        Reports to the user how many services were successfully created,
-        how many failed, and lists the IDs of those that failed.
-        """
         # Build the list of entries from the selected services
-        entries = []
-        for service_id in selected_ids:
-            if service_id in services:
-                entries.append(services[service_id])
+        entries = [services[service_id] for service_id in selected_ids if service_id in services]
 
         payload = {
             "header": {"id": 1},
@@ -1213,21 +1205,19 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
-        # Parse the response
+        # Parse the response and count successes/failures
         data = resp_json.get("data", {})
         entriesLink = data.get("entriesLink", [])
         bookresult = data.get("bookresult", {})
         details = bookresult.get("details", {})
-        
+
         success_count = 0
         failed_services = []
 
-        # Iterate over each entry result
         for link in entriesLink:
             entry_id = link.get("id")
             if link.get("error") is None and entry_id:
                 detail = details.get(entry_id, {})
-                # A status of 0 indicates success
                 if detail.get("status", 0) == 0:
                     success_count += 1
                 else:
@@ -1237,7 +1227,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         total = len(entriesLink)
         failure_count = total - success_count
-        
+
         msg = f"Successfully created {success_count} service(s).\n"
         if failure_count > 0:
             msg += f"Failed to create {failure_count} service(s): {', '.join(failed_services)}"
@@ -1249,6 +1239,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "Service Creation Results",
             msg
         )
+
+        # Automatically refresh the services list in the GUI
+        await self.refreshServicesAsync()
 
     def editSystems(self):
         from systems_editor_dialog import SystemsEditorDialog
