@@ -97,9 +97,8 @@ def create_splash_screen(app):  # Accept the QApplication instance as parameter
 
 def get_user_config_dir() -> Path:
     """
-    Returns a Path object pointing to a user-writable configuration directory.
-    On Windows, it uses LOCALAPPDATA; on macOS, it uses the Application Support directory;
-    on Linux, it uses XDG_CONFIG_HOME (or ~/.config as fallback).
+    Returns a Path object for a user-writable configuration directory.
+    On Windows, uses LOCALAPPDATA; on macOS, uses Application Support; on Linux, uses XDG_CONFIG_HOME (or ~/.config).
     The directory is created if it doesn't exist.
     """
     if sys.platform.startswith("win"):
@@ -113,13 +112,13 @@ def get_user_config_dir() -> Path:
 
 def get_remote_systems_config_file() -> Path:
     """
-    Returns the full file path for storing remotesystems.json in a user-writable location.
+    Returns the full path to remotesystems.json in the user-writable config directory.
     """
     return get_user_config_dir() / "remotesystems.json"
 
 def save_remote_systems_config(config_data: dict) -> None:
     """
-    Saves the provided configuration data (as JSON) to the remotesystems.json file in a user-writable directory.
+    Saves the provided configuration data as JSON into remotesystems.json in a user-writable location.
     """
     config_file = get_remote_systems_config_file()
     try:
@@ -132,8 +131,8 @@ def save_remote_systems_config(config_data: dict) -> None:
 
 def load_remote_systems_config() -> dict | None:
     """
-    Loads and returns the remote systems configuration from the remotesystems.json file.
-    Returns None if the file does not exist or fails to load.
+    Loads and returns the remote systems configuration from remotesystems.json.
+    Returns None if the file does not exist or cannot be loaded.
     """
     config_file = get_remote_systems_config_file()
     if not config_file.exists():
@@ -147,6 +146,25 @@ def load_remote_systems_config() -> dict | None:
     except Exception as e:
         logging.error(f"Error loading remote systems configuration: {e}")
         return None
+
+def ensure_remote_systems_config():
+    """
+    Checks if remotesystems.json exists in the user config directory.
+    If not, copies the default bundled file (via resource_path) to that location.
+    """
+    config_file = get_remote_systems_config_file()
+    if not config_file.exists():
+        default_config_path = resource_path("remotesystems.json")
+        if os.path.exists(default_config_path):
+            try:
+                with open(default_config_path, "r", encoding="utf-8") as src, \
+                     open(config_file, "w", encoding="utf-8") as dst:
+                    dst.write(src.read())
+                logging.debug(f"Copied default remotesystems.json to {config_file}")
+            except Exception as e:
+                logging.error(f"Failed to copy default remotesystems.json: {e}")
+        else:
+            logging.debug("Default remotesystems.json not found in resources.")
 
 def get_current_version():
     """
@@ -1297,11 +1315,6 @@ class MainWindow(QtWidgets.QMainWindow):
         await self.refreshServicesAsync()
 
     def editSystems(self):
-        """
-        Opens the Systems Editor dialog and passes the user-writable configuration directory.
-        Ensure that SystemsEditorDialog is updated to accept a config_dir parameter so that any changes are
-        saved in a user-writable location.
-        """
         from systems_editor_dialog import SystemsEditorDialog
         config_dir = get_user_config_dir()
         dlg = SystemsEditorDialog(self, config_dir=config_dir)
@@ -1865,6 +1878,9 @@ def main():
     # 2) Create the main window (hidden)
     logger.debug("Creating MainWindow instance (hidden).")
     main_window = MainWindow()
+    
+    # Ensure the remote systems configuration is in a user-writable location.
+    ensure_remote_systems_config()
 
     # (Optional) Load custom fonts
     loaded_fonts = load_custom_fonts()
@@ -1890,12 +1906,11 @@ def main():
 
         # 1) Get release body, remove the old "Full Changelog" line if present
         raw_body = update_info.get("body", "")
-        release_body = sanitize_release_body(raw_body)  # from step 2
+        release_body = sanitize_release_body(raw_body)
 
         # 2) Build compare tags (assuming your version is "0.0.9" not "v0.0.9")
-        # If your version is already "v0.0.9", remove the 'v' below
         current_tag = current_version if current_version.startswith("v") else f"v{current_version}"
-        head_tag = latest_version  # e.g. "v0.1.0"
+        head_tag = latest_version
 
         # 3) Fetch commits from GH compare
         commits_html = fetch_compare_commits("magnusoverli", "VIPrestore", current_tag, head_tag)
@@ -1908,16 +1923,13 @@ def main():
             commits_html=commits_html
         )
 
-        # If accepted, user wants to update
         if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             logger.debug("User accepted. Downloading update...")
             download_update(update_info)
-            # Return so we don't show main window
             return
         else:
             logger.debug("User declined update.")
 
-        # If user declined, show main window
         main_window.show()
         splash.finish(main_window)
 
