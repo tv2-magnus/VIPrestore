@@ -38,6 +38,7 @@ a = Analysis(
         ('logos/*.gif', 'logos'),
         ('fonts/*.ttf', 'fonts'),
         ('remotesystems.json', '.'),
+        (r'venv\Lib\site-packages\pyvis\templates', 'pyvis/templates'),
     ],
     hiddenimports=[],
     hookspath=[],
