@@ -95,6 +95,59 @@ def create_splash_screen(app):  # Accept the QApplication instance as parameter
     
     return splash, spinner_movie
 
+def get_user_config_dir() -> Path:
+    """
+    Returns a Path object pointing to a user-writable configuration directory.
+    On Windows, it uses LOCALAPPDATA; on macOS, it uses the Application Support directory;
+    on Linux, it uses XDG_CONFIG_HOME (or ~/.config as fallback).
+    The directory is created if it doesn't exist.
+    """
+    if sys.platform.startswith("win"):
+        config_dir = Path(os.getenv("LOCALAPPDATA")) / "VIPrestore"
+    elif sys.platform == "darwin":
+        config_dir = Path.home() / "Library" / "Application Support" / "VIPrestore"
+    else:
+        config_dir = Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config")) / "VIPrestore"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
+
+def get_remote_systems_config_file() -> Path:
+    """
+    Returns the full file path for storing remotesystems.json in a user-writable location.
+    """
+    return get_user_config_dir() / "remotesystems.json"
+
+def save_remote_systems_config(config_data: dict) -> None:
+    """
+    Saves the provided configuration data (as JSON) to the remotesystems.json file in a user-writable directory.
+    """
+    config_file = get_remote_systems_config_file()
+    try:
+        with open(config_file, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=2)
+        logging.debug(f"Remote systems configuration saved to {config_file}")
+    except Exception as e:
+        logging.error(f"Error saving remote systems configuration: {e}")
+        raise
+
+def load_remote_systems_config() -> dict | None:
+    """
+    Loads and returns the remote systems configuration from the remotesystems.json file.
+    Returns None if the file does not exist or fails to load.
+    """
+    config_file = get_remote_systems_config_file()
+    if not config_file.exists():
+        logging.debug(f"Remote systems configuration file does not exist at {config_file}")
+        return None
+    try:
+        with open(config_file, "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+        logging.debug(f"Remote systems configuration loaded from {config_file}")
+        return config_data
+    except Exception as e:
+        logging.error(f"Error loading remote systems configuration: {e}")
+        return None
+
 def get_current_version():
     """
     Reads the current application version from version.txt in the project directory.
@@ -1244,8 +1297,14 @@ class MainWindow(QtWidgets.QMainWindow):
         await self.refreshServicesAsync()
 
     def editSystems(self):
+        """
+        Opens the Systems Editor dialog and passes the user-writable configuration directory.
+        Ensure that SystemsEditorDialog is updated to accept a config_dir parameter so that any changes are
+        saved in a user-writable location.
+        """
         from systems_editor_dialog import SystemsEditorDialog
-        dlg = SystemsEditorDialog(self)
+        config_dir = get_user_config_dir()
+        dlg = SystemsEditorDialog(self, config_dir=config_dir)
         dlg.exec()
 
     def updateConnectionStatus(self, connected: bool, ssl_verified: bool = True):
