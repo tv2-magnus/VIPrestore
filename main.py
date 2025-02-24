@@ -5,10 +5,7 @@ import json
 import asyncio
 from datetime import datetime, timedelta
 from qasync import QEventLoop
-from PyQt6.QtGui import QGuiApplication
 from PyQt6 import QtWidgets, uic, QtGui, QtCore
-from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtWidgets import QProgressDialog, QMessageBox, QApplication
 from vipclient import VideoIPathClient, VideoIPathClientError
 from login_dialog import LoginDialog
 from load_services_dialog import LoadServicesDialog
@@ -21,7 +18,6 @@ import tempfile
 import subprocess
 import logging
 from pathlib import Path
-from dotenv import load_dotenv
 from map import create_network_map
 from PyQt6 import QtWebEngineWidgets
 
@@ -381,10 +377,6 @@ def load_custom_fonts():
             print(f"No font families found for: {filename}")
 
     return loaded_fonts
-
-class WorkerSignals(QtCore.QObject):
-    finished = QtCore.pyqtSignal(dict)
-    error = QtCore.pyqtSignal(str)
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):

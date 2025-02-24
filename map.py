@@ -1,5 +1,3 @@
-import sys
-import json
 import logging
 from pyvis.network import Network
 from PyQt6 import QtWidgets
