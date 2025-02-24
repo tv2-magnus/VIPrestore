@@ -127,16 +127,12 @@ def parse_version(version_str):
 
 def check_for_update(current_version, repo_owner, repo_name):
     url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases"
-    
-    # If your repo is private, ensure token has "repo" scope. Otherwise "public_repo" is enough.
-    token = "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"
 
     headers = {
-        "Authorization": f"token {token}",
         "Accept": "application/vnd.github+json",
         "User-Agent": "viprestore-updater"
     }
-    
+
     logging.debug(f"Checking for update at: {url}")
     logging.debug(f"Using headers: {headers}")
 
@@ -145,8 +141,6 @@ def check_for_update(current_version, repo_owner, repo_name):
         logging.debug(f"Response status: {response.status_code}")
         logging.debug(f"Response text:\n{response.text}")
 
-        # If you get 404 here, it means GitHub's API didn't find the repo (or you have no permission).
-        # So keep an eye on whether the repo name or the token scope is correct.
         response.raise_for_status()
 
         data = response.json()
@@ -173,12 +167,9 @@ def download_update(update_info):
     from PyQt6.QtWidgets import QMessageBox, QProgressDialog
     from PyQt6.QtCore import QTimer, Qt
 
-    # Same token as in check_for_update
-    token = "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"
-    
     headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/octet-stream"
+        "Accept": "application/octet-stream",
+        "User-Agent": "viprestore-updater"
     }
 
     assets = update_info.get("assets", [])
