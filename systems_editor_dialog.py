@@ -1,13 +1,18 @@
-import json
+from pathlib import Path
 import os
-from PyQt6 import QtWidgets, QtCore
+import json
+from PyQt6 import QtWidgets, QtCore, QtGui
 
 class SystemsEditorDialog(QtWidgets.QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config_dir: Path | None = None):
         super().__init__(parent)
         self.setWindowTitle("Systems Editor")
         self.resize(600, 400)
-        self.systems_file = "remotesystems.json"
+        # Use the provided config_dir; otherwise, fallback to the current directory.
+        if config_dir is not None:
+            self.systems_file = Path(config_dir) / "remotesystems.json"
+        else:
+            self.systems_file = Path("remotesystems.json")
         self.systems = []
         self.setup_ui()
         self.load_systems()
@@ -63,9 +68,9 @@ class SystemsEditorDialog(QtWidgets.QDialog):
         self.button_box.rejected.connect(self.reject)
 
     def load_systems(self):
-        if os.path.exists(self.systems_file):
+        if self.systems_file.exists():
             try:
-                with open(self.systems_file, "r") as f:
+                with self.systems_file.open("r", encoding="utf-8") as f:
                     self.systems = json.load(f)
             except Exception:
                 self.systems = []
@@ -141,7 +146,7 @@ class SystemsEditorDialog(QtWidgets.QDialog):
 
     def save_and_accept(self):
         try:
-            with open(self.systems_file, "w") as f:
+            with self.systems_file.open("w", encoding="utf-8") as f:
                 json.dump(self.systems, f, indent=4)
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save systems: {e}")
@@ -150,6 +155,7 @@ class SystemsEditorDialog(QtWidgets.QDialog):
 
 if __name__ == "__main__":
     import sys
+    from PyQt6 import QtWidgets
     app = QtWidgets.QApplication(sys.argv)
     dlg = SystemsEditorDialog()
     dlg.exec()
