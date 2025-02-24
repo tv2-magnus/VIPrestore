@@ -16,71 +16,41 @@ class VideoIPathClient:
         self.password: Optional[str] = None
 
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
-        """
-        Improved error handling to give friendlier messages about possible causes of 400/401, etc.
-        """
+        # First try with SSL verification enabled.
         try:
-            resp = self.session.request(method, url, **kwargs)
-            resp.raise_for_status()
-            return resp
-
-        except requests.exceptions.SSLError:
-            warnings.warn("SSL verification failed, retrying without certificate verification.", RuntimeWarning)
+            response = self.session.request(method, url, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.SSLError as ssl_err:
+            # Log a warning and notify the caller that we're falling back.
+            warnings.warn(
+                "SSL verification failed. Falling back to an insecure connection. "
+                "This is less secure and should only be used when necessary.",
+                RuntimeWarning
+            )
+            # Disable certificate verification and retry.
             self.session.verify = False
             try:
-                resp = self.session.request(method, url, **kwargs)
-                resp.raise_for_status()
-                return resp
+                response = self.session.request(method, url, **kwargs)
+                response.raise_for_status()
+                return response
             except requests.exceptions.RequestException as e:
                 raise VideoIPathClientError(f"Request failed after SSL fallback: {e}") from e
 
-        except requests.exceptions.ConnectTimeout:
-            raise VideoIPathClientError("Connection timed out while trying to reach the server.")
-
-        except requests.exceptions.ConnectionError as ce:
-            # Sometimes a certificate error is reported as a ConnectionError if the server forcibly resets.
-            raise VideoIPathClientError(
-                "Failed to connect to the server. Possibly a certificate mismatch or unreachable endpoint."
-            ) from ce
-
-        except requests.exceptions.HTTPError as http_err:
-            code = http_err.response.status_code
-            # Provide more details for specific codes:
-            if code == 400:
-                # Often means the request is invalid for that server, or additional authentication is required.
-                raise VideoIPathClientError(
-                    f"HTTP 400 Bad Request. Please check if the server requires a client certificate, "
-                    f"or if the request payload is incorrect. Original error: {http_err}"
-                ) from http_err
-            elif code == 401:
-                # Unauthenticated or wrong password
-                raise VideoIPathClientError("401 Unauthorized. Check credentials or token.") from http_err
-            elif code == 403:
-                # Forbidden: credentials recognized but not allowed for that resource
-                raise VideoIPathClientError("403 Forbidden. The server denied access.") from http_err
-            else:
-                raise VideoIPathClientError(
-                    f"HTTP error {code} ({http_err.response.reason}): {http_err}"
-                ) from http_err
-
-        except requests.exceptions.RequestException as req_exc:
-            # Generic fallback
-            raise VideoIPathClientError(f"Request failed: {req_exc}") from req_exc
-
     def login(self, username: str, password: str) -> None:
         """
-        Enhanced login to clarify potential 400 vs. 401 scenarios.
+        Attempts to log in using cookie-based session authentication.
+        First, it tries the secure (HTTPS) connection; if that fails due to SSL issues,
+        it will automatically fall back to an insecure connection.
         """
         url = f"{self.base_url}/api/_session"
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        data = f"name={username}&password={password}"
-
+        # Use a dict so that requests handles URL encoding
+        data = {"name": username, "password": password}
+        
         try:
             resp = self._request("POST", url, headers=headers, data=data)
         except VideoIPathClientError as e:
-            # If we specifically got a '400' from the server, the user might be hitting
-            # an endpoint that needs a special handshake (like a client certificate).
-            # Just re-raise the error message for clarity:
             raise VideoIPathClientError(f"Login attempt failed: {e}") from e
 
         try:
@@ -92,6 +62,7 @@ class VideoIPathClient:
             details = result.get("error") or result.get("msg") or str(result)
             raise VideoIPathClientError(f"Login failed: {details}")
 
+        # Store session cookies and set the X-XSRF-TOKEN header for subsequent requests.
         token = self.session.cookies.get("XSRF-TOKEN")
         if token:
             self.xsrf_token = token
