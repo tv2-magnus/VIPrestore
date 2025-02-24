@@ -158,6 +158,47 @@ def check_for_update(current_version, repo_owner, repo_name):
         logging.error(f"Update check failed: {e}")
         return None
 
+def fetch_compare_commits(owner: str, repo: str, base_tag: str, head_tag: str) -> str:
+    """
+    Returns a simple text or HTML snippet showing the commit messages
+    from the compare endpoint.
+    Example: "https://api.github.com/repos/{owner}/{repo}/compare/{base_tag}...{head_tag}"
+    """
+    compare_api_url = f"https://api.github.com/repos/{owner}/{repo}/compare/{base_tag}...{head_tag}"
+    logger.debug(f"Fetching compare data from: {compare_api_url}")
+
+    try:
+        resp = requests.get(compare_api_url, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning(f"Failed to fetch compare commits: {e}")
+        return "(Could not fetch commit list.)"
+
+    data = resp.json()
+    commits = data.get("commits", [])
+    if not commits:
+        return "No commits found between these versions."
+
+    # Build a bullet-list of commits (short SHA + commit message)
+    lines = []
+    for c in commits:
+        sha = c.get("sha", "")
+        short_sha = sha[:7] if len(sha) >= 7 else sha
+        message = c.get("commit", {}).get("message", "")
+        lines.append(f"- <b>{short_sha}</b> {message}")
+
+    result = "<p><b>Commits in this release:</b></p>\n" + "<br>".join(lines)
+    return result
+
+def sanitize_release_body(body: str) -> str:
+    lines = body.splitlines()
+    filtered = []
+    for ln in lines:
+        if "Full Changelog" in ln:
+            continue  # skip that line
+        filtered.append(ln)
+    return "\n".join(filtered)
+
 def human_readable_size(size_in_bytes: int) -> str:
     """Helper to convert bytes into a more readable string."""
     units = ["B", "KB", "MB", "GB", "TB"]
@@ -1785,30 +1826,46 @@ def main():
         logger.debug("Performing update check.")
         current_version = get_current_version()
         update_info = check_for_update(current_version, "magnusoverli", "VIPrestore")
-        if update_info:
-            latest_version = update_info.get("tag_name")
-            logger.debug(f"Update available: {latest_version} > {current_version}")
 
-            msg = QtWidgets.QMessageBox()
-            msg.setWindowTitle("Update Available")
-            msg.setText(f"A new version ({latest_version}) is available. Download and install now?")
-            msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes |
-                                QtWidgets.QMessageBox.StandardButton.No)
-            logger.debug("Showing update prompt...")
-            choice = msg.exec()
+        if not update_info:
+            logger.debug("No update found or update check failed.")
+            main_window.show()
+            splash.finish(main_window)
+            return
 
-            if choice == QtWidgets.QMessageBox.StandardButton.Yes:
-                logger.debug("User accepted. Downloading update...")
-                download_update(update_info)
-                # IMPORTANT: return immediately so we do NOT show the main window
-                return
+        latest_version = update_info.get("tag_name", "").strip()
+        logger.debug(f"Update available: {latest_version} > {current_version}")
 
-            # If user declined, proceed with normal launch
-            logger.debug("User declined the update. Proceed to show the main window.")
+        # 1) Get release body, remove the old "Full Changelog" line if present
+        raw_body = update_info.get("body", "")
+        release_body = sanitize_release_body(raw_body)  # from step 2
+
+        # 2) Build compare tags (assuming your version is "0.0.9" not "v0.0.9")
+        # If your version is already "v0.0.9", remove the 'v' below
+        current_tag = current_version if current_version.startswith("v") else f"v{current_version}"
+        head_tag = latest_version  # e.g. "v0.1.0"
+
+        # 3) Fetch commits from GH compare
+        commits_html = fetch_compare_commits("magnusoverli", "VIPrestore", current_tag, head_tag)
+
+        # 4) Show UpdateDialog
+        from update_dialog import UpdateDialog
+        dlg = UpdateDialog(
+            current_version=current_version,
+            new_version=latest_version,
+            commits_html=commits_html
+        )
+
+        # If accepted, user wants to update
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            logger.debug("User accepted. Downloading update...")
+            download_update(update_info)
+            # Return so we don't show main window
+            return
         else:
-            logger.debug("No update found or update check failed. Showing main window.")
+            logger.debug("User declined update.")
 
-        # Show the main window only if no update or user declined
+        # If user declined, show main window
         main_window.show()
         splash.finish(main_window)
 
