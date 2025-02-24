@@ -616,79 +616,115 @@ class MainWindow(QtWidgets.QMainWindow):
         context_menu.exec(self.tableViewServices.viewport().mapToGlobal(position))
 
     def showDetailsContextMenu(self, position):
-            """Shows the context menu for the service details table."""
-            context_menu = QtWidgets.QMenu(self)
+        """Shows the context menu for the service details table."""
+        # Add logging for debugging
+        logger.debug("showDetailsContextMenu() called")
+        logger.debug(f"Context menu requested at position: {position}")
 
-            # --- Copy Cell Action (Exists) ---
-            copy_action = QtGui.QAction("Copy Cell", self)
-            copy_action.triggered.connect(lambda: self.copyCell(self.tableWidgetServiceDetails))
-            context_menu.addAction(copy_action)
-            # --- End Copy Cell Action ---
+        context_menu = QtWidgets.QMenu(self)
 
-            # Get the item at the clicked position
-            index = self.tableWidgetServiceDetails.indexAt(position)
-            if index.isValid():
-                item = self.tableWidgetServiceDetails.item(index.row(), 0)  # Get item from the *first* column
-                if item and item.text() == "res":
-                    show_map_action = QtGui.QAction("Show Map", self)
-                    show_map_action.triggered.connect(self.show_map) # Connect to show_map
-                    context_menu.addAction(show_map_action)
+        # --- Copy Cell Action ---
+        copy_action = QtGui.QAction("Copy Cell", self)
+        copy_action.triggered.connect(lambda: self.copyCell(self.tableWidgetServiceDetails))
+        context_menu.addAction(copy_action)
+        # --- End Copy Cell Action ---
 
-            # Show the context menu at the global position
-            context_menu.exec(self.tableWidgetServiceDetails.viewport().mapToGlobal(position))
+        # Check which cell was clicked
+        index = self.tableWidgetServiceDetails.indexAt(position)
+        if index.isValid():
+            item = self.tableWidgetServiceDetails.item(index.row(), 0)
+            logger.debug(f"Clicked cell info: Row={index.row()}, Col={index.column()}, Text='{item.text() if item else 'None'}'")
+
+            if item and item.text() == "res":
+                show_map_action = QtGui.QAction("Show Map", self)
+                show_map_action.triggered.connect(self.show_map)
+                context_menu.addAction(show_map_action)
+                logger.debug("Added 'Show Map' action to context menu for 'res' field.")
+
+        logger.debug("Displaying details context menu now.")
+        context_menu.exec(self.tableWidgetServiceDetails.viewport().mapToGlobal(position))
+        logger.debug("Context menu closed.")
 
     def show_map(self):
         """Displays the network map in a dialog."""
-        # Get selected row from details table (should be the "res" row)
-        selected_indexes = self.tableWidgetServiceDetails.selectedIndexes()
-        if not selected_indexes:
-            return  # No row selected
-
-        index = selected_indexes[0]
-        res_data_str = self.tableWidgetServiceDetails.model().data(index, QtCore.Qt.ItemDataRole.DisplayRole)
-
+        logger.debug("show_map() called")
         try:
-            res_data = json.loads(res_data_str)
-        except json.JSONDecodeError:
-            QtWidgets.QMessageBox.critical(self, "Map Error", "Invalid JSON data in 'res' field.")
-            return
+            # Get selected row from details table (should be the "res" row)
+            selected_indexes = self.tableWidgetServiceDetails.selectedIndexes()
+            logger.debug(f"Selected indexes in tableWidgetServiceDetails: {selected_indexes}")
 
-        # --- Prepare Additional Data for the Map ---
-        endpoint_map = self._endpoint_map  # Maps device IDs to labels
+            if not selected_indexes:
+                logger.debug("No row selected in Service Details table. Aborting.")
+                return  # No row selected
 
-        # Build services_data from self.currentServices
-        services_data = {}
-        for service_id, service in self.currentServices.items():
-            booking = service.get("booking", {})
-            services_data[service_id] = {
-                "profile_name": self._profile_mapping.get(booking.get("profile", ""), "N/A"),
-                "createdBy": booking.get("createdBy", "N/A"),
-                "allocationState": booking.get("allocationState", "N/A"),
-                "start": self._format_timestamp(booking.get("start")),
-                "end": self._format_timestamp(booking.get("end")),
-            }
+            index = selected_indexes[0]
+            res_data_str = self.tableWidgetServiceDetails.model().data(index, QtCore.Qt.ItemDataRole.DisplayRole)
+            logger.debug(f"res_data_str: {res_data_str}")
 
-        # --- Generate the map HTML ---
-        html_string = create_network_map(res_data, parent_widget=self, endpoint_map=endpoint_map, services_data=services_data)
-        
-        if not html_string:
-            return  # Error message already shown in create_network_map
+            # Attempt to parse JSON data in the 'res' field
+            try:
+                res_data = json.loads(res_data_str)
+                logger.debug("Parsed 'res' JSON successfully.")
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid JSON data in 'res' field: {e}")
+                QtWidgets.QMessageBox.critical(self, "Map Error", "Invalid JSON data in 'res' field.")
+                return
 
-        # --- Create the dialog and web view ---
-        dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Network Map")
-        dialog.resize(800, 600)
-        layout = QtWidgets.QVBoxLayout(dialog)
-        web_view = QtWebEngineWidgets.QWebEngineView(dialog)
-        web_view.setHtml(html_string)  # Load the HTML string
-        layout.addWidget(web_view)
+            # Prepare data for create_network_map
+            endpoint_map = self._endpoint_map  # Maps device IDs to labels
 
-        # Add a close button
-        close_button = QtWidgets.QPushButton("Close", dialog)
-        close_button.clicked.connect(dialog.close)
-        layout.addWidget(close_button)
+            # Build services_data from self.currentServices
+            services_data = {}
+            for service_id, service in self.currentServices.items():
+                booking = service.get("booking", {})
+                services_data[service_id] = {
+                    "profile_name": self._profile_mapping.get(booking.get("profile", ""), "N/A"),
+                    "createdBy": booking.get("createdBy", "N/A"),
+                    "allocationState": booking.get("allocationState", "N/A"),
+                    "start": self._format_timestamp(booking.get("start")),
+                    "end": self._format_timestamp(booking.get("end")),
+                }
+            logger.debug(f"Built services_data for map: {list(services_data.keys())}")
 
-        dialog.exec()
+            # Generate the map HTML
+            html_string = create_network_map(
+                res_data,
+                parent_widget=self,
+                endpoint_map=endpoint_map,
+                services_data=services_data
+            )
+            logger.debug("create_network_map() returned HTML data.")
+
+            if not html_string:
+                logger.debug("No HTML string returned (error already handled). Aborting.")
+                return
+
+            # Create and show the dialog with QWebEngineView
+            dialog = QtWidgets.QDialog(self)
+            dialog.setWindowTitle("Network Map")
+            dialog.resize(800, 600)
+            layout = QtWidgets.QVBoxLayout(dialog)
+
+            web_view = QtWebEngineWidgets.QWebEngineView(dialog)
+            web_view.setHtml(html_string)
+            layout.addWidget(web_view)
+
+            close_button = QtWidgets.QPushButton("Close", dialog)
+            close_button.clicked.connect(dialog.close)
+            layout.addWidget(close_button)
+
+            logger.debug("Launching Network Map dialog.")
+            dialog.exec()
+            logger.debug("Network Map dialog closed.")
+
+        except Exception as e:
+            # Catch any unexpected errors
+            logger.exception("An unexpected error occurred in show_map()")
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Map Error",
+                f"An unexpected error occurred: {str(e)}"
+            )
 
     def _format_timestamp(self, timestamp):
         """Converts a timestamp into a readable date format."""
