@@ -759,11 +759,29 @@ class MainWindow(QtWidgets.QMainWindow):
 
             if not selected_indexes:
                 logger.debug("No row selected in Service Details table. Aborting.")
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Map Information",
+                    "Please select the 'res' field in the Service Details table to view the map."
+                )
                 return  # No row selected
 
             index = selected_indexes[0]
+            row = index.row()
+            
+            # Verify we're on the "res" row
+            key_item = self.tableWidgetServiceDetails.item(row, 0)
+            if not key_item or key_item.text() != "res":
+                logger.debug(f"Selected row ({row}) is not the 'res' field. Found: {key_item.text() if key_item else 'None'}")
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Map Information",
+                    "Please select the 'res' field row to view the network map."
+                )
+                return
+                
             res_data_str = self.tableWidgetServiceDetails.model().data(index, QtCore.Qt.ItemDataRole.DisplayRole)
-            logger.debug(f"res_data_str: {res_data_str}")
+            logger.debug(f"res_data_str length: {len(res_data_str) if res_data_str else 0}")
 
             # Attempt to parse JSON data in the 'res' field
             try:
@@ -771,55 +789,122 @@ class MainWindow(QtWidgets.QMainWindow):
                 logger.debug("Parsed 'res' JSON successfully.")
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON data in 'res' field: {e}")
-                QtWidgets.QMessageBox.critical(self, "Map Error", "Invalid JSON data in 'res' field.")
+                QtWidgets.QMessageBox.critical(
+                    self, 
+                    "Map Error", 
+                    f"The 'res' field contains invalid JSON data: {str(e)}\n\nPlease ensure the service has valid network path information."
+                )
+                return
+            except TypeError as e:
+                logger.error(f"TypeError parsing 'res' data: {e}")
+                QtWidgets.QMessageBox.critical(
+                    self, 
+                    "Map Error", 
+                    f"Could not parse the 'res' field: {str(e)}\n\nThe field may be empty or contain unexpected data."
+                )
+                return
+
+            # Verify res_data has the expected structure
+            if not isinstance(res_data, dict):
+                logger.error(f"'res' data is not a dictionary. Got: {type(res_data).__name__}")
+                QtWidgets.QMessageBox.critical(
+                    self, 
+                    "Map Error", 
+                    "The 'res' field has an unexpected format. Expected a JSON object."
+                )
+                return
+                
+            if "paths" not in res_data:
+                logger.error("'res' data is missing the required 'paths' field")
+                QtWidgets.QMessageBox.critical(
+                    self, 
+                    "Map Error", 
+                    "The 'res' field does not contain path information. This service may not have an associated network path."
+                )
                 return
 
             # Prepare data for create_network_map
             endpoint_map = self._endpoint_map  # Maps device IDs to labels
+            logger.debug(f"Using endpoint_map with {len(endpoint_map)} entries")
 
             # Build services_data from self.currentServices
-            services_data = {}
-            for service_id, service in self.currentServices.items():
-                booking = service.get("booking", {})
-                services_data[service_id] = {
-                    "profile_name": self._profile_mapping.get(booking.get("profile", ""), "N/A"),
-                    "createdBy": booking.get("createdBy", "N/A"),
-                    "allocationState": booking.get("allocationState", "N/A"),
-                    "start": self._format_timestamp(booking.get("start")),
-                    "end": self._format_timestamp(booking.get("end")),
-                }
-            logger.debug(f"Built services_data for map: {list(services_data.keys())}")
+            try:
+                services_data = {}
+                for service_id, service in self.currentServices.items():
+                    booking = service.get("booking", {})
+                    services_data[service_id] = {
+                        "profile_name": self._profile_mapping.get(booking.get("profile", ""), "N/A"),
+                        "createdBy": booking.get("createdBy", "N/A"),
+                        "allocationState": booking.get("allocationState", "N/A"),
+                        "start": self._format_timestamp(booking.get("start")),
+                        "end": self._format_timestamp(booking.get("end")),
+                    }
+                logger.debug(f"Built services_data for map with {len(services_data)} services")
+            except Exception as e:
+                logger.error(f"Error building services_data: {e}")
+                # Continue with empty services_data rather than failing
+                services_data = {}
+                logger.warning("Continuing with empty services_data due to error")
 
-            # Generate the map HTML
-            html_string = create_network_map(
-                res_data,
-                parent_widget=self,
-                endpoint_map=endpoint_map,
-                services_data=services_data
-            )
-            logger.debug("create_network_map() returned HTML data.")
+            # Generate the map HTML with comprehensive error handling
+            try:
+                html_string = create_network_map(
+                    res_data,
+                    parent_widget=self,
+                    endpoint_map=endpoint_map,
+                    services_data=services_data
+                )
+                logger.debug("create_network_map() returned HTML data.")
+            except Exception as e:
+                logger.exception("Unexpected exception calling create_network_map")
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Map Generation Error",
+                    f"An unexpected error occurred while generating the map: {str(e)}"
+                )
+                return
 
             if not html_string:
                 logger.debug("No HTML string returned (error already handled). Aborting.")
                 return
 
             # Create and show the dialog with QWebEngineView
-            dialog = QtWidgets.QDialog(self)
-            dialog.setWindowTitle("Network Map")
-            dialog.resize(800, 600)
-            layout = QtWidgets.QVBoxLayout(dialog)
+            try:
+                dialog = QtWidgets.QDialog(self)
+                dialog.setWindowTitle("Network Map")
+                dialog.resize(800, 600)
+                layout = QtWidgets.QVBoxLayout(dialog)
 
-            web_view = QtWebEngineWidgets.QWebEngineView(dialog)
-            web_view.setHtml(html_string)
-            layout.addWidget(web_view)
+                web_view = QtWebEngineWidgets.QWebEngineView(dialog)
+                web_view.setHtml(html_string)
+                layout.addWidget(web_view)
 
-            close_button = QtWidgets.QPushButton("Close", dialog)
-            close_button.clicked.connect(dialog.close)
-            layout.addWidget(close_button)
+                # Add error handler for web view loading failures
+                def handle_load_finished(success):
+                    if not success:
+                        logger.error("QWebEngineView failed to load the HTML content")
+                        QtWidgets.QMessageBox.warning(
+                            dialog,
+                            "Map Rendering Warning",
+                            "The map content could not be fully rendered. The visualization may be incomplete."
+                        )
+                
+                web_view.loadFinished.connect(handle_load_finished)
 
-            logger.debug("Launching Network Map dialog.")
-            dialog.exec()
-            logger.debug("Network Map dialog closed.")
+                close_button = QtWidgets.QPushButton("Close", dialog)
+                close_button.clicked.connect(dialog.close)
+                layout.addWidget(close_button)
+
+                logger.debug("Launching Network Map dialog.")
+                dialog.exec()
+                logger.debug("Network Map dialog closed.")
+            except Exception as e:
+                logger.exception("Error creating network map dialog")
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Map Display Error",
+                    f"Failed to display the network map: {str(e)}"
+                )
 
         except Exception as e:
             # Catch any unexpected errors
@@ -829,6 +914,48 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Map Error",
                 f"An unexpected error occurred: {str(e)}"
             )
+    def ssl_exception_handler(self, message: str) -> bool:
+        """Handle SSL certificate exceptions by prompting the user in a thread-safe way"""
+        # We need to use Qt's event loop to call back to the main thread
+        event_loop = QtCore.QEventLoop()
+        result = [False]  # Use a list to store the result from the inner function
+        
+        # This will run on the main thread
+        def show_dialog():
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "SSL Certificate Warning",
+                message,
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No  # Default is No (safer)
+            )
+            result[0] = reply == QtWidgets.QMessageBox.StandardButton.Yes
+            event_loop.quit()
+        
+        # Schedule the dialog to be shown on the main thread
+        QtCore.QMetaObject.invokeMethod(self, "showSslWarningDialog", 
+                                    QtCore.Qt.ConnectionType.QueuedConnection,
+                                    QtCore.Q_ARG(str, message),
+                                    QtCore.Q_ARG(object, result),
+                                    QtCore.Q_ARG(object, event_loop))
+        
+        # Wait for the dialog to be handled
+        event_loop.exec()
+        return result[0]
+
+    # Add this slot method to MainWindow
+    @QtCore.pyqtSlot(str, object, object)
+    def showSslWarningDialog(self, message, result_list, event_loop):
+        """Slot to show SSL warning dialog on the main thread"""
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "SSL Certificate Warning",
+            message,
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No
+        )
+        result_list[0] = reply == QtWidgets.QMessageBox.StandardButton.Yes
+        event_loop.quit()
 
     def _format_timestamp(self, timestamp):
         """Converts a timestamp into a readable date format."""
@@ -1026,8 +1153,12 @@ class MainWindow(QtWidgets.QMainWindow):
             if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
                 break
             server_url, username, password = dlg.getCredentials()
-            self.server_url = server_url  # Store for later reference in updateConnectionStatus
-            self.client = VideoIPathClient(server_url)
+            self.server_url = server_url  # Store for later reference
+            self.client = VideoIPathClient(
+                server_url,
+                verify_ssl=True,
+                ssl_exception_callback=self.ssl_exception_handler  # Add this parameter
+            )
             loop = asyncio.get_running_loop()
             try:
                 await loop.run_in_executor(self.executor, self.client.login, username, password)

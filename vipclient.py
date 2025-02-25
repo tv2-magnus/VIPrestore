@@ -1,47 +1,97 @@
 import requests
 import warnings
 from requests import Session
-from typing import Optional
+from typing import Optional, Callable, Dict
+from urllib.parse import urlparse
 
 class VideoIPathClientError(Exception):
     pass
 
 class VideoIPathClient:
-    def __init__(self, base_url: str, verify_ssl: bool = True) -> None:
+    def __init__(self, base_url: str, verify_ssl: bool = True, 
+                 ssl_exception_callback: Optional[Callable[[str], bool]] = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.session: Session = requests.Session()
         self.session.verify = verify_ssl
         self.xsrf_token: Optional[str] = None
         self.username: Optional[str] = None
         self.password: Optional[str] = None
-
+        # Callback for SSL exceptions - should return True to continue with insecure connection
+        self.ssl_exception_callback = ssl_exception_callback
+        # Dictionary to store user decisions about SSL exceptions per domain
+        self.ssl_exceptions: Dict[str, bool] = {}
+        
+    def get_domain_from_url(self, url: str) -> str:
+        """Extract domain from URL for tracking SSL exceptions"""
+        return urlparse(url).netloc
+        
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
-        # First try with SSL verification enabled.
-        try:
-            response = self.session.request(method, url, **kwargs)
-            response.raise_for_status()
-            return response
-        except requests.exceptions.SSLError as ssl_err:
-            # Log a warning and notify the caller that we're falling back.
-            warnings.warn(
-                "SSL verification failed. Falling back to an insecure connection. "
-                "This is less secure and should only be used when necessary.",
-                RuntimeWarning
-            )
-            # Disable certificate verification and retry.
-            self.session.verify = False
+        domain = self.get_domain_from_url(url)
+        
+        # Check if we already have a decision for this domain
+        if domain in self.ssl_exceptions and not self.session.verify:
+            # User previously accepted the risk for this domain
             try:
                 response = self.session.request(method, url, **kwargs)
                 response.raise_for_status()
                 return response
             except requests.exceptions.RequestException as e:
-                raise VideoIPathClientError(f"Request failed after SSL fallback: {e}") from e
+                raise VideoIPathClientError(f"Request failed: {e}") from e
+        
+        # First try with SSL verification per current setting
+        try:
+            response = self.session.request(method, url, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.SSLError as ssl_err:
+            # Only proceed if we have a callback to confirm with user
+            if self.ssl_exception_callback is None:
+                raise VideoIPathClientError(
+                    "SSL certificate verification failed and no exception handler is available"
+                ) from ssl_err
+                
+            # Ask user if they want to proceed
+            message = (
+                f"SSL certificate verification failed for {domain}.\n\n"
+                "Continuing without verification could expose sensitive information "
+                "to attackers. Only proceed if you understand the risks.\n\n"
+                "Do you want to continue with an insecure connection?"
+            )
+            
+            # Get user decision via callback
+            proceed = self.ssl_exception_callback(message)
+            
+            if proceed:
+                # Remember this decision for this domain
+                self.ssl_exceptions[domain] = True
+                # Temporarily disable verification for this request
+                old_verify = self.session.verify
+                self.session.verify = False
+                
+                warnings.warn(
+                    f"SSL verification disabled for {domain} per user request. "
+                    "This is less secure and should only be used when necessary.",
+                    RuntimeWarning
+                )
+                
+                try:
+                    response = self.session.request(method, url, **kwargs)
+                    response.raise_for_status()
+                    return response
+                except requests.exceptions.RequestException as e:
+                    raise VideoIPathClientError(f"Request failed after SSL exception: {e}") from e
+            else:
+                # User declined to proceed with insecure connection
+                raise VideoIPathClientError(
+                    f"SSL certificate verification failed for {domain}. "
+                    "Connection aborted per user request."
+                ) from ssl_err
 
     def login(self, username: str, password: str) -> None:
         """
         Attempts to log in using cookie-based session authentication.
         First, it tries the secure (HTTPS) connection; if that fails due to SSL issues,
-        it will automatically fall back to an insecure connection.
+        it will prompt the user before proceeding with an insecure connection.
         """
         url = f"{self.base_url}/api/_session"
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
