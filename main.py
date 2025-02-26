@@ -20,18 +20,22 @@ import logging
 from pathlib import Path
 from map import create_network_map
 from splash_manager import SplashManager
+import styling
 from application_updater import ApplicationUpdater
+from constants import APP_NAME
 from PyQt6 import QtWebEngineWidgets
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-log_dir = Path(os.getenv('LOCALAPPDATA')) / "VIPrestore"
+log_dir = Path(os.getenv('LOCALAPPDATA')) / APP_NAME
 log_dir.mkdir(parents=True, exist_ok=True)
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_filename = f"viprestore_{timestamp}.log"
 
 # Configure logging
 logging.basicConfig(
-    filename=str(log_dir / 'viprestore.log'),
-    filemode='a',
+    filename=str(log_dir / log_filename),
+    filemode='w',  # 'w' instead of 'a' since each file is new
     format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.DEBUG
 )
@@ -166,73 +170,6 @@ class DownloadWorker(QtCore.QObject):
     def cancel_download(self):
         """Sets a flag so the download loop can stop."""
         self._cancelled = True
-
-def set_app_icon(app, window):
-    """
-    Sets the application icon using a high-quality multi-size .ico on Windows,
-    and .png on other platforms. Also sets any OS-specific attributes like
-    the Windows app user model ID.
-    """
-    from PyQt6.QtGui import QIcon, QGuiApplication
-    from PyQt6 import QtCore
-    import ctypes
-
-    # Determine icon path based on platform
-    if sys.platform == 'win32':
-        icon_path = resource_path(os.path.join("logos", "viprestore_icon.ico"))
-    else:
-        icon_path = resource_path(os.path.join("logos", "viprestore_icon.png"))
-
-    # Create and set the icon if it exists
-    if os.path.exists(icon_path):
-        icon = QIcon(icon_path)
-        app.setWindowIcon(icon)
-        window.setWindowIcon(icon)
-
-    # OS-specific settings
-    if sys.platform.startswith('linux'):
-        app.setDesktopFileName('viprestore.desktop')
-    elif sys.platform == 'win32':
-        myappid = 'mycompany.viprestore.client.1.0'  # must be unique
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-
-def load_custom_fonts():
-    """Load all required Roboto font variants and return a dict of font families."""
-    from PyQt6 import QtGui
-    import os
-    
-    font_files = {
-        'regular': 'Roboto-Regular.ttf',
-        'bold': 'Roboto-Bold.ttf',
-    }
-
-    loaded_fonts = {}
-    fonts_dir = resource_path("fonts")
-    
-    # Debug information
-    print(f"Looking for fonts in: {fonts_dir}")
-    print(f"Full path to Regular: {os.path.join(fonts_dir, 'Roboto-Regular.ttf')}")
-    print(f"Full path to Bold: {os.path.join(fonts_dir, 'Roboto-Bold.ttf')}")
-
-    for variant, filename in font_files.items():
-        font_path = os.path.join(fonts_dir, filename)
-        if not os.path.exists(font_path):
-            print(f"Warning: Font file not found: {font_path}")
-            continue
-
-        font_id = QtGui.QFontDatabase.addApplicationFont(font_path)
-        if font_id == -1:
-            print(f"Failed to load font: {filename}")
-            continue
-
-        families = QtGui.QFontDatabase.applicationFontFamilies(font_id)
-        if families:
-            loaded_fonts[variant] = families[0]
-            print(f"Successfully loaded font: {filename}")
-        else:
-            print(f"No font families found for: {filename}")
-
-    return loaded_fonts
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -1528,13 +1465,8 @@ def main():
     # Ensure the remote systems configuration is in a user-writable location.
     ensure_remote_systems_config()
 
-    # Load custom fonts and set app icon
-    loaded_fonts = load_custom_fonts()
-    if 'regular' in loaded_fonts:
-        app.setFont(QtGui.QFont(loaded_fonts['regular'], 10))
-    if 'bold' in loaded_fonts:
-        main_window.set_bold_font_family(loaded_fonts['bold'])
-    set_app_icon(app, main_window)
+    # Apply application styling
+    styling.setup_appearance(app, main_window)
 
     # Check for updates using the ApplicationUpdater
     updater = ApplicationUpdater(main_window, splash_manager)
