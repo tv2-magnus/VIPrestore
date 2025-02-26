@@ -20,6 +20,7 @@ import subprocess
 import logging
 from pathlib import Path
 from map import create_network_map
+from application_updater import ApplicationUpdater
 from PyQt6 import QtWebEngineWidgets
 
 logger = logging.getLogger(__name__)
@@ -167,120 +168,6 @@ def ensure_remote_systems_config():
         else:
             logging.debug("Default remotesystems.json not found in resources.")
 
-def get_current_version():
-    """
-    Reads the current application version from version.txt in the project directory.
-    """
-    try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(base_dir, "version.txt"), "r", encoding="utf-8") as f:
-            version = f.read().strip()
-            logging.debug(f"Current version: {version}")
-            return version
-    except Exception as e:
-        logging.error(f"Error reading version.txt: {e}")
-        return "0.0.0"
-
-def parse_version(version_str):
-    version_str = version_str.lstrip("v")
-    parts = version_str.split("-")
-    main = parts[0]
-    build = parts[1] if len(parts) > 1 else None
-    
-    main_nums = [int(x) for x in main.split(".")]
-    if build and build.isdigit():
-        main_nums.append(int(build))
-        
-    return tuple(main_nums)
-
-def check_for_update(current_version, repo_owner, repo_name):
-    url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases"
-
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "viprestore-updater"
-    }
-
-    logging.debug(f"Checking for update at: {url}")
-    logging.debug(f"Using headers: {headers}")
-
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        logging.debug(f"Response status: {response.status_code}")
-        logging.debug(f"Response text:\n{response.text}")
-
-        response.raise_for_status()
-
-        data = response.json()
-        if not data:
-            logging.debug("No releases found (empty JSON).")
-            return None
-
-        latest = data[0]
-        latest_version = latest.get("tag_name", "").strip()
-
-        if parse_version(latest_version) > parse_version(current_version):
-            logging.debug(f"Update available: {latest_version} > {current_version}")
-            return latest
-
-        logging.debug("No update available.")
-        return None
-
-    except Exception as e:
-        logging.error(f"Update check failed: {e}")
-        return None
-
-def fetch_compare_commits(owner: str, repo: str, base_tag: str, head_tag: str) -> str:
-    """
-    Returns a simple text or HTML snippet showing the commit messages
-    from the compare endpoint.
-    Example: "https://api.github.com/repos/{owner}/{repo}/compare/{base_tag}...{head_tag}"
-    """
-    compare_api_url = f"https://api.github.com/repos/{owner}/{repo}/compare/{base_tag}...{head_tag}"
-    logger.debug(f"Fetching compare data from: {compare_api_url}")
-
-    try:
-        resp = requests.get(compare_api_url, timeout=10)
-        resp.raise_for_status()
-    except Exception as e:
-        logger.warning(f"Failed to fetch compare commits: {e}")
-        return "(Could not fetch commit list.)"
-
-    data = resp.json()
-    commits = data.get("commits", [])
-    if not commits:
-        return "No commits found between these versions."
-
-    # Build a bullet-list of commits (short SHA + commit message)
-    lines = []
-    for c in commits:
-        sha = c.get("sha", "")
-        short_sha = sha[:7] if len(sha) >= 7 else sha
-        message = c.get("commit", {}).get("message", "")
-        lines.append(f"- <b>{short_sha}</b> {message}")
-
-    result = "<p><b>Commits in this release:</b></p>\n" + "<br>".join(lines)
-    return result
-
-def sanitize_release_body(body: str) -> str:
-    lines = body.splitlines()
-    filtered = []
-    for ln in lines:
-        if "Full Changelog" in ln:
-            continue  # skip that line
-        filtered.append(ln)
-    return "\n".join(filtered)
-
-def human_readable_size(size_in_bytes: int) -> str:
-    """Helper to convert bytes into a more readable string."""
-    units = ["B", "KB", "MB", "GB", "TB"]
-    size = float(size_in_bytes)
-    idx = 0
-    while size >= 1024 and idx < len(units) - 1:
-        size /= 1024
-        idx += 1
-    return f"{size:.2f} {units[idx]}"
-
 class DownloadWorker(QtCore.QObject):
     """Worker object that handles the file download in a separate thread."""
 
@@ -339,90 +226,6 @@ class DownloadWorker(QtCore.QObject):
     def cancel_download(self):
         """Sets a flag so the download loop can stop."""
         self._cancelled = True
-
-def download_update(update_info):
-    """
-    Asynchronously download the latest release asset from GitHub.
-    Creates a progress dialog that remains responsive while the download runs
-    in another thread, and handles cancel operations gracefully.
-    """
-
-    assets = update_info.get("assets", [])
-    if not assets:
-        QtWidgets.QMessageBox.critical(None, "Update Error", "No downloadable assets found in the latest release.")
-        return
-
-    asset = assets[0]
-    asset_api_url = asset.get("url")
-    filename = asset.get("name")
-
-    headers = {
-        "Accept": "application/octet-stream",
-        "User-Agent": "viprestore-updater"
-    }
-
-    # Create a progress dialog
-    progress = QtWidgets.QProgressDialog("Initializing download...", "Cancel", 0, 100)
-    progress.setWindowTitle("Downloading Update")
-    # If you have an icon for the window, set it here:
-    # progress.setWindowIcon(QtGui.QIcon("path/to/your/icon.png"))
-    progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
-    progress.setMinimumDuration(0)
-    progress.setValue(0)
-    progress.show()
-
-    # Force the dialog to repaint before starting the thread
-    QtWidgets.QApplication.processEvents()
-
-    # Create worker and thread
-    worker = DownloadWorker(asset_api_url, filename, headers)
-    thread = QtCore.QThread()
-    worker.moveToThread(thread)
-
-    # Connect signals
-    worker.progressChanged.connect(progress.setValue)
-    worker.statusTextChanged.connect(progress.setLabelText)
-    worker.errorOccurred.connect(lambda msg: handle_download_error(msg, progress, thread))
-    worker.finished.connect(lambda path: handle_download_finished(path, progress, thread))
-
-    # Cancel button should signal the worker to abort
-    def cancel_pressed():
-        worker.cancel_download()
-        progress.setLabelText("Cancelling...")
-
-    progress.canceled.connect(cancel_pressed)
-
-    # When the thread starts, call the worker's start_download()
-    thread.started.connect(worker.start_download)
-
-    # Start the thread
-    thread.start()
-
-def handle_download_error(error_message: str, progress_dialog: QtWidgets.QProgressDialog, thread: QtCore.QThread):
-    """Helper: show error and clean up thread."""
-    QtWidgets.QMessageBox.critical(None, "Update Error", f"Download failed: {error_message}")
-    progress_dialog.close()
-    thread.quit()
-    thread.wait()
-
-def handle_download_finished(file_path: str, progress_dialog: QtWidgets.QProgressDialog, thread: QtCore.QThread):
-    """Helper: handle successful download, show prompt to install."""
-    progress_dialog.setValue(100)
-    progress_dialog.close()
-    thread.quit()
-    thread.wait()
-
-    reply = QtWidgets.QMessageBox.question(
-        None,
-        "Update Downloaded",
-        "Update has been downloaded. Install it now?",
-        QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
-    )
-    if reply == QtWidgets.QMessageBox.StandardButton.Yes:
-        logging.debug("Launching the downloaded update.")
-        subprocess.Popen([file_path], shell=True)
-        QtWidgets.QApplication.quit()
-        sys.exit(0)
 
 def set_app_icon(app, window):
     """
@@ -1780,9 +1583,6 @@ def main():
     app.processEvents()
     logger.debug("Splash screen displayed.")
     
-    # Store the start time
-    start_time = QtCore.QDateTime.currentDateTime()
-
     # 2) Create the main window (hidden)
     logger.debug("Creating MainWindow instance (hidden).")
     main_window = MainWindow()
@@ -1790,7 +1590,7 @@ def main():
     # Ensure the remote systems configuration is in a user-writable location.
     ensure_remote_systems_config()
 
-    # (Optional) Load custom fonts
+    # Load custom fonts and set app icon
     loaded_fonts = load_custom_fonts()
     if 'regular' in loaded_fonts:
         app.setFont(QtGui.QFont(loaded_fonts['regular'], 10))
@@ -1798,58 +1598,10 @@ def main():
         main_window.set_bold_font_family(loaded_fonts['bold'])
     set_app_icon(app, main_window)
 
-    def perform_update_check():
-        logger.debug("Performing update check.")
-        current_version = get_current_version()
-        update_info = check_for_update(current_version, "magnusoverli", "VIPrestore")
-
-        if not update_info:
-            logger.debug("No update found or update check failed.")
-            main_window.show()
-            splash.finish(main_window)
-            return
-
-        latest_version = update_info.get("tag_name", "").strip()
-        logger.debug(f"Update available: {latest_version} > {current_version}")
-
-        # 1) Get release body, remove the old "Full Changelog" line if present
-        raw_body = update_info.get("body", "")
-        release_body = sanitize_release_body(raw_body)
-
-        # 2) Build compare tags (assuming your version is "0.0.9" not "v0.0.9")
-        current_tag = current_version if current_version.startswith("v") else f"v{current_version}"
-        head_tag = latest_version
-
-        # 3) Fetch commits from GH compare
-        commits_html = fetch_compare_commits("magnusoverli", "VIPrestore", current_tag, head_tag)
-
-        # 4) Show UpdateDialog
-        from update_dialog import UpdateDialog
-        dlg = UpdateDialog(
-            current_version=current_version,
-            new_version=latest_version,
-            commits_html=commits_html
-        )
-
-        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
-            logger.debug("User accepted. Downloading update...")
-            download_update(update_info)
-            return
-        else:
-            logger.debug("User declined update.")
-
-        main_window.show()
-        splash.finish(main_window)
-
-    # Ensure the splash is visible for at least 2 seconds
-    elapsed = start_time.msecsTo(QtCore.QDateTime.currentDateTime())
-    min_splash_time = 2000  # Minimum 2 seconds
-    if elapsed < min_splash_time:
-        remaining = min_splash_time - elapsed
-        QtCore.QTimer.singleShot(remaining, perform_update_check)
-    else:
-        perform_update_check()
-
+    # Check for updates using the ApplicationUpdater
+    updater = ApplicationUpdater(main_window, splash)
+    updater.check_for_updates_async()
+    
     logger.debug("Starting the event loop.")
     with loop:
         loop.run_forever()
