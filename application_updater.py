@@ -194,6 +194,12 @@ class ApplicationUpdater:
             self.parent.show()
 
     def download_update(self, update_info):
+        """
+        Download the latest release asset from GitHub with progress tracking.
+        
+        Args:
+            update_info: GitHub release information dictionary
+        """
         assets = update_info.get("assets", [])
         if not assets:
             QtWidgets.QMessageBox.critical(self.parent, "Update Error", "No downloadable assets found in the latest release.")
@@ -201,8 +207,7 @@ class ApplicationUpdater:
             return
 
         asset = assets[0]
-        # Use browser_download_url instead of url
-        asset_api_url = asset.get("browser_download_url")  # <-- This is the key change
+        asset_api_url = asset.get("browser_download_url")
         filename = asset.get("name")
 
         logger.debug(f"Downloading from: {asset_api_url}")
@@ -222,25 +227,45 @@ class ApplicationUpdater:
         # Force the dialog to repaint
         QtWidgets.QApplication.processEvents()
 
-        # Create worker and thread
-        worker = DownloadWorker(asset_api_url, filename, headers)
-        thread = QtCore.QThread()
-        worker.moveToThread(thread)
+        # Create worker and thread and store as instance variables to prevent garbage collection
+        self.download_thread = QtCore.QThread()
+        self.download_worker = DownloadWorker(asset_api_url, filename, headers)
+        self.download_worker.moveToThread(self.download_thread)
 
         # Connect signals
-        worker.progressChanged.connect(progress.setValue)
-        worker.statusTextChanged.connect(progress.setLabelText)
-        worker.errorOccurred.connect(lambda msg: self.handle_download_error(msg, progress, thread))
-        worker.finished.connect(lambda path: self.handle_download_finished(path, progress, thread))
+        self.download_worker.progressChanged.connect(progress.setValue)
+        self.download_worker.statusTextChanged.connect(progress.setLabelText)
+        self.download_worker.errorOccurred.connect(
+            lambda msg: self.handle_download_error(msg, progress, self.download_thread))
+        self.download_worker.finished.connect(
+            lambda path: self.handle_download_finished(path, progress, self.download_thread))
+        self.download_worker.cancelled.connect(
+            lambda: self.handle_download_cancelled(progress, self.download_thread))
 
-        # Cancel button should signal the worker to abort
-        progress.canceled.connect(worker.cancel_download)
+        # Connect cancel button to handler
+        progress.canceled.connect(lambda: self.handle_progress_cancelled(progress))
 
         # When the thread starts, call the worker's start_download()
-        thread.started.connect(worker.start_download)
+        self.download_thread.started.connect(self.download_worker.start_download)
 
         # Start the thread
-        thread.start()
+        logger.debug("Starting download thread")
+        self.download_thread.start()
+
+    def handle_progress_cancelled(self, progress):
+        """Handle when the user clicks the cancel button on the progress dialog."""
+        progress.setCancelButtonText("Cancelling...")
+        progress.setLabelText("Cancelling download...")
+        progress.setCancelButton(None)  # Disable the cancel button
+        self.download_worker.cancel_download()
+
+    def handle_download_cancelled(self, progress_dialog, thread):
+        """Handle when the download has been successfully cancelled."""
+        logger.debug("Download cancellation complete")
+        progress_dialog.close()
+        thread.quit()
+        thread.wait()
+        self.parent.show()
 
     def handle_download_error(self, error_message: str, progress_dialog: QtWidgets.QProgressDialog, thread: QtCore.QThread):
         QtWidgets.QMessageBox.critical(self.parent, "Update Error", f"Download failed: {error_message}")
@@ -294,7 +319,7 @@ class UpdateCheckWorker(QtCore.QObject):
 
 class DownloadWorker(QtCore.QObject):
     """Worker object that handles the file download in a separate thread."""
-
+    cancelled = QtCore.pyqtSignal()
     progressChanged = QtCore.pyqtSignal(int)
     statusTextChanged = QtCore.pyqtSignal(str)
     finished = QtCore.pyqtSignal(str)
@@ -320,40 +345,49 @@ class DownloadWorker(QtCore.QObject):
     @QtCore.pyqtSlot()
     def start_download(self):
         try:
+            logger.debug("Starting download process")
             temp_dir = tempfile.gettempdir()
             file_path = os.path.join(temp_dir, self.filename)
+            logger.debug(f"Download target path: {file_path}")
 
             response = requests.get(self.download_url, stream=True, headers=self.headers, timeout=30)
+            logger.debug(f"Response status: {response.status_code}")
             response.raise_for_status()
 
             total_size = int(response.headers.get('content-length', 0))
+            logger.debug(f"Content length: {total_size} bytes")
             downloaded_size = 0
-            chunk_size = 1024 * 1024  # 1MB chunk size
+            chunk_size = 1024 * 1024
 
             with open(file_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=chunk_size):
                     if self._cancelled:
-                        # Delete partial file if user canceled
+                        logger.debug("Download cancelled")
                         f.close()
                         if os.path.exists(file_path):
                             os.remove(file_path)
+                        self.cancelled.emit()  # Add this line
                         return
                     if chunk:
                         f.write(chunk)
                         downloaded_size += len(chunk)
                         if total_size > 0:
                             percent = int((downloaded_size / total_size) * 100)
+                            if percent % 10 == 0:  # Log every 10%
+                                logger.debug(f"Download progress: {percent}%")
                             self.progressChanged.emit(percent)
                             self.statusTextChanged.emit(
                                 f"Downloading... {self._human_readable_size(downloaded_size)} of {self._human_readable_size(total_size)}"
                             )
 
+            logger.debug(f"Download completed successfully: {file_path}")
             self.progressChanged.emit(100)
             self.finished.emit(file_path)
 
         except Exception as e:
-            logging.error(f"Error during download: {e}")
+            logger.error(f"Error during download: {e}", exc_info=True)
             self.errorOccurred.emit(str(e))
 
     def cancel_download(self):
         self._cancelled = True
+        self.statusTextChanged.emit("Cancelling download...")
