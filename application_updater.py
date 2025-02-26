@@ -141,7 +141,7 @@ class ApplicationUpdater:
         self.thread.wait()
         
         # Close splash if it exists
-        if self.splash and self.splash.isVisible():
+        if self.splash:
             self.splash.close()
         
         if not update_info:
@@ -160,7 +160,7 @@ class ApplicationUpdater:
         self.thread.wait()
         
         # Close splash and show main window
-        if self.splash and self.splash.isVisible():
+        if self.splash:
             self.splash.close()
         
         self.parent.show()

@@ -3,7 +3,7 @@ import os
 import re
 import json
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from qasync import QEventLoop
 from PyQt6 import QtWidgets, uic, QtGui, QtCore
 from vipclient import VideoIPathClient, VideoIPathClientError
@@ -16,10 +16,10 @@ from utils import resource_path
 from service_manager import ServiceManager, ServiceManagerError
 import requests
 import tempfile
-import subprocess
 import logging
 from pathlib import Path
 from map import create_network_map
+from splash_manager import SplashManager
 from application_updater import ApplicationUpdater
 from PyQt6 import QtWebEngineWidgets
 
@@ -36,66 +36,6 @@ logging.basicConfig(
     level=logging.DEBUG
 )
 logging.debug("Application started")
-
-def create_splash_screen(app):  # Accept the QApplication instance as parameter
-    from PyQt6 import QtWidgets, QtGui, QtCore
-    
-    # Create base widget
-    base = QtWidgets.QWidget()
-    base.setFixedSize(400, 300)
-    
-    # Create layout
-    layout = QtWidgets.QVBoxLayout(base)
-    layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-    layout.setSpacing(20)
-    
-    # Add logo
-    logo_label = QtWidgets.QLabel()
-    logo_pixmap = QtGui.QPixmap(resource_path("logos/viprestore_icon.png"))
-    logo_label.setPixmap(logo_pixmap.scaled(
-        150, 150,
-        QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-        QtCore.Qt.TransformationMode.SmoothTransformation
-    ))
-    logo_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-    layout.addWidget(logo_label)
-    
-    # Add spinner GIF
-    spinner_label = QtWidgets.QLabel()
-    spinner_movie = QtGui.QMovie(resource_path("logos/spinner.gif"))
-    # Add debug checks
-    if not spinner_movie.isValid():
-        logger.debug("Spinner GIF failed to load!")
-    spinner_movie.setScaledSize(QtCore.QSize(32, 32))
-    spinner_label.setMinimumSize(32, 32)
-    spinner_label.setMovie(spinner_movie)
-    spinner_movie.start()
-    spinner_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-    # Add debug size check
-    logger.debug(f"Spinner label size: {spinner_label.size()}")
-    layout.addWidget(spinner_label)
-    
-    # Add loading text
-    loading_label = QtWidgets.QLabel("Loading, please wait...")
-    loading_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-    loading_label.setStyleSheet("""
-        QLabel {
-            color: #404040;
-            font-size: 14px;
-            font-family: Arial;
-            margin-top: 10px;
-        }
-    """)
-    layout.addWidget(loading_label)
-    
-    # Set background and create pixmap
-    base.setStyleSheet("background-color: white;")
-    pixmap = base.grab()
-    
-    # Create splash screen
-    splash = QtWidgets.QSplashScreen(pixmap, QtCore.Qt.WindowType.FramelessWindowHint)
-    
-    return splash, spinner_movie
 
 def get_user_config_dir() -> Path:
     """
@@ -1577,13 +1517,11 @@ def main():
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
     
-    # 1) Show the splash immediately
-    splash, spinner = create_splash_screen(app)
-    splash.show()
-    app.processEvents()
-    logger.debug("Splash screen displayed.")
+    # Initialize splash screen
+    splash_manager = SplashManager(app)
+    splash_manager.show()
     
-    # 2) Create the main window (hidden)
+    # Create the main window (hidden)
     logger.debug("Creating MainWindow instance (hidden).")
     main_window = MainWindow()
     
@@ -1599,7 +1537,7 @@ def main():
     set_app_icon(app, main_window)
 
     # Check for updates using the ApplicationUpdater
-    updater = ApplicationUpdater(main_window, splash)
+    updater = ApplicationUpdater(main_window, splash_manager)
     updater.check_for_updates_async()
     
     logger.debug("Starting the event loop.")
