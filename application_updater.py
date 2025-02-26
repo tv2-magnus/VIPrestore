@@ -201,11 +201,13 @@ class ApplicationUpdater:
             return
 
         asset = assets[0]
-        asset_api_url = asset.get("url")
+        # Use browser_download_url instead of url
+        asset_api_url = asset.get("browser_download_url")  # <-- This is the key change
         filename = asset.get("name")
 
+        logger.debug(f"Downloading from: {asset_api_url}")
+
         headers = {
-            "Accept": "application/octet-stream",
             "User-Agent": "viprestore-updater"
         }
 
