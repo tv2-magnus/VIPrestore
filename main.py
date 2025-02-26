@@ -13,6 +13,7 @@ from group_detail_dialog import GroupDetailDialog
 from concurrent.futures import ThreadPoolExecutor
 from services_filter import ServicesFilterProxy
 from utils import resource_path
+from service_manager import ServiceManager, ServiceManagerError
 import requests
 import tempfile
 import subprocess
@@ -573,10 +574,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Instance Variables
         self.client = None
-        self._profile_mapping = {}
-        self._endpoint_map = {}
+        self.service_manager = ServiceManager()
         self.profileCheckBoxes = []
-        self.currentServices = {}
 
         # Executor for blocking calls
         self.executor = ThreadPoolExecutor()
@@ -824,7 +823,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
 
             # Prepare data for create_network_map
-            endpoint_map = self._endpoint_map  # Maps device IDs to labels
+            endpoint_map = self.service_manager.endpoint_map
             logger.debug(f"Using endpoint_map with {len(endpoint_map)} entries")
 
             # Build services_data from self.currentServices
@@ -987,7 +986,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtWidgets.QApplication.clipboard().setText(str(text))
 
     async def cancelSelectedServices(self):
-        """Cancels the currently selected services."""
         indexes = self.tableViewServices.selectionModel().selectedRows()
         if not indexes:
             QtWidgets.QMessageBox.information(
@@ -1008,90 +1006,29 @@ class MainWindow(QtWidgets.QMainWindow):
         if confirm != QtWidgets.QMessageBox.StandardButton.Yes:
             return
 
-        entries = []
+        service_ids = []
         for index in indexes:
-            # Get the service ID and revision.  Crucially, use filterProxy.index()
-            # to get the *mapped* index in the underlying model.
             service_id = self.filterProxy.index(index.row(), 0).data()
-            service_data = self.currentServices.get(service_id)
-            if not service_data: # Safety check, in case service list not updated
-                QtWidgets.QMessageBox.critical(self, "Error", f"Service {service_id} not found.")
-                return
-            
-            booking_data = service_data.get("booking")
-            if not booking_data:
-                QtWidgets.QMessageBox.critical(self, "Error", f"Could not find booking data for service {service_id}.")
-                return
+            service_ids.append(service_id)
 
-            revision = booking_data.get("rev")
-            if revision is None:  # Another safety check
-                QtWidgets.QMessageBox.critical(self, "Error", f"Could not retrieve revision for service {service_id}")
-                return
-
-            entries.append({"id": service_id, "rev": revision})
-
-        payload = {
-            "header": {"id": 1},
-            "data": {
-                "conflictStrategy": 0,  # Or another strategy if you prefer
-                "bookingStrategy": 2,   # Best effort
-                "entries": entries
-            }
-        }
-
-        loop = asyncio.get_running_loop()
         try:
-            # Use _request (as your other methods do) for consistency.
-            response = await loop.run_in_executor(
-                self.executor,
-                lambda: self.client._request(
-                    "POST",
-                    f"{self.client.base_url}/api/cancelModernServices",
-                    headers={"Content-Type": "application/json"},
-                    json=payload
-                )
-            )
-            response_json = response.json()
-
-            # --- Response Handling ---
-            if not response_json['header']['ok']:
-                QtWidgets.QMessageBox.critical(self, "Cancel Error",
-                                               f"API call failed: {response_json['header']['msg']}")
-                return
-
-            data = response_json.get("data", {})
-            entries_link = data.get("entriesLink", [])
-            bookresult = data.get("bookresult", {})
-            details = bookresult.get("details", {})
+            result = await self.service_manager.cancel_services(service_ids)
             
-            success_count = 0
-            failed_services = []
-
-            for link in entries_link:
-                service_id = link.get("id")
-                if link.get("error") is None and service_id:
-                    detail = details.get(service_id, {})
-                    if detail.get("status") == 0:  #0 is success
-                        success_count += 1
-                    else:
-                        failed_services.append(f"{service_id}: Status {detail.get('status')}")
-                else:
-                    error_msg = link.get("error", "Unknown error")
-                    failed_services.append(f"{service_id if service_id else 'Unknown'}: {error_msg}")
+            success_count = result["success_count"]
+            total = result["total"]
+            failed_services = result["failed_services"]
             
-            total_attempted = len(entries)
-            failure_count = len(failed_services)
-            
-            msg = f"Successfully cancelled {success_count} of {total_attempted} service(s).\n"
+            msg = f"Successfully cancelled {success_count} of {total} service(s).\n"
             if failed_services:
-                msg += f"Failed to cancel:\n" + "\n".join(failed_services)
-
+                msg += "Failed to cancel:\n"
+                for service_id, error in failed_services:
+                    msg += f"- {service_id}: {error}\n"
+            
             QtWidgets.QMessageBox.information(self, "Cancellation Results", msg)
-            # --- End Response Handling ---
-
-
-        except Exception as e:
+        except ServiceManagerError as e:
             QtWidgets.QMessageBox.critical(self, "Cancel Error", str(e))
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Unexpected Error", f"An unexpected error occurred: {str(e)}")
         finally:
             # Always refresh, even if there's an error
             await self.refreshServicesAsync()
@@ -1162,6 +1099,7 @@ class MainWindow(QtWidgets.QMainWindow):
             loop = asyncio.get_running_loop()
             try:
                 await loop.run_in_executor(self.executor, self.client.login, username, password)
+                self.service_manager.set_client(self.client)
                 session_info = await loop.run_in_executor(self.executor, lambda: self.client.get("/api/_session"))
                 user_data = session_info.get("userCtx", {})
                 username_disp = user_data.get("name", "unknown")
@@ -1198,6 +1136,7 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Logout Error", str(e))
         self.client = None
+        self.service_manager.set_client(None)
         self.updateConnectionStatus(False)
         self.clearAppState()
 
@@ -1224,7 +1163,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 w.deleteLater()
         self.profileCheckBoxes.clear()
 
-    def saveSelectedServices(self):
+    async def saveSelectedServices(self):
         indexes = self.tableViewServices.selectionModel().selectedRows()
         if not indexes:
             QtWidgets.QMessageBox.information(
@@ -1234,100 +1173,45 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
-        modern_services_to_save = {}
-        
+        service_ids = []
         for index in indexes:
             service_id = self.filterProxy.index(index.row(), 0).data()
-            service_data = self.currentServices.get(service_id)
-            
-            if service_data:
-                booking = service_data.get("booking", {})
-                
-                # Parse timestamps
-                try:
-                    start_ts = int(booking.get("start", 0))
-                except:
-                    start_ts = 0
-                    
-                try:
-                    end_ts = int(booking.get("end", 0))
-                except:
-                    end_ts = 0
-
-                # Extract device labels from descriptor label if formatted as "Source -> Destination"
-                descriptor = booking.get("descriptor", {})
-                descriptor_label = descriptor.get("label", "")
-                
-                if "->" in descriptor_label:
-                    parts = descriptor_label.split("->")
-                    from_label = parts[0].strip()
-                    to_label = parts[1].strip() if len(parts) > 1 else ""
-                else:
-                    from_label = booking.get("from", "")
-                    to_label = booking.get("to", "")
-
-                # Get profile id and then the profile name from the mapping
-                profile_id = booking.get("profile", "")
-                profile_name = self._profile_mapping.get(profile_id, profile_id) if profile_id else ""
-
-                modern_entry = {
-                    "scheduleInfo": {
-                        "startTimestamp": start_ts,
-                        "type": "once",
-                        "endTimestamp": end_ts
-                    },
-                    "locked": False,
-                    "serviceDefinition": {
-                        "from": booking.get("from", ""),
-                        "to": booking.get("to", ""),
-                        "fromLabel": from_label,  # new field: device label for source
-                        "toLabel": to_label,      # new field: device label for destination
-                        "allocationState": booking.get("allocationState", 0),
-                        "descriptor": {
-                            "desc": descriptor.get("desc", ""),
-                            "label": descriptor_label
-                        },
-                        "profileId": profile_id,
-                        "profileName": profile_name,  # new field: user-friendly profile name
-                        "tags": booking.get("tags", []),
-                        "type": "connection",
-                        "ctype": 2
-                    }
-                }
-                
-                modern_services_to_save[service_id] = modern_entry
-
-        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save Modern Services",
-            "",
-            "JSON Files (*.json)"
-        )
-        
-        if not file_path:
-            return
+            service_ids.append(service_id)
 
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(modern_services_to_save, f, indent=2)
+            modern_services_to_save = self.service_manager.prepare_services_for_export(service_ids)
+            
+            file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                "Save Modern Services",
+                "",
+                "JSON Files (*.json)"
+            )
+            
+            if not file_path:
+                return
+
+            await self.service_manager.save_services(modern_services_to_save, file_path)
             
             QtWidgets.QMessageBox.information(
                 self,
                 "Success",
                 f"Saved {len(modern_services_to_save)} service(s) to {file_path}."
             )
+        except ServiceManagerError as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Error Saving Services",
+                str(e)
+            )
         except Exception as e:
             QtWidgets.QMessageBox.critical(
                 self,
-                "Error Saving File",
-                str(e)
+                "Unexpected Error",
+                f"An unexpected error occurred: {str(e)}"
             )
 
-    def load_services_from_file(self) -> dict | None:
-        """
-        Opens a file dialog for the user to select a JSON file containing modern-format services.
-        Returns the loaded JSON as a dictionary or None if loading fails.
-        """
+    async def load_services_from_file(self):
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "Open Services File",
@@ -1339,14 +1223,12 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data
-        except Exception as e:
+            return await self.service_manager.load_services(file_path)
+        except ServiceManagerError as e:
             QtWidgets.QMessageBox.critical(
                 self,
                 "Error Loading File",
-                f"Failed to load file: {e}"
+                str(e)
             )
             return None
 
@@ -1355,7 +1237,7 @@ class MainWindow(QtWidgets.QMainWindow):
         Loads modern-format services from a file, presents them in a confirmation dialog,
         and then creates the selected services via the modern API.
         """
-        services = self.load_services_from_file()
+        services = await self.load_services_from_file()  # Add await here
         if not services:
             return
 
@@ -1374,76 +1256,43 @@ class MainWindow(QtWidgets.QMainWindow):
 
         await self.create_services_from_file(services, selected_ids)
 
-    async def create_services_from_file(self, services: dict, selected_ids: set):
-        # Build the list of entries from the selected services
-        entries = [services[service_id] for service_id in selected_ids if service_id in services]
-
-        payload = {
-            "header": {"id": 1},
-            "data": {
-                "conflictStrategy": 0,
-                "bookingStrategy": 2,
-                "entries": entries
-            }
-        }
-
-        loop = asyncio.get_running_loop()
+    async def create_services_from_file(self, services, selected_ids):
         try:
-            response = await loop.run_in_executor(
-                self.executor,
-                lambda: self.client._request(
-                    "POST",
-                    f"{self.client.base_url}/api/setModernServices",
-                    headers={"Content-Type": "application/json"},
-                    json=payload
-                )
+            result = await self.service_manager.create_services(services, selected_ids)
+            
+            success_count = result["success_count"]
+            total = result["total"]
+            failed_services = result["failed_services"]
+            
+            msg = f"Successfully created {success_count} service(s).\n"
+            if failed_services:
+                failure_count = len(failed_services)
+                msg += f"Failed to create {failure_count} service(s):\n"
+                for service_id, error in failed_services:
+                    msg += f"- {service_id}: {error}\n"
+            else:
+                msg += "All services were created successfully."
+            
+            QtWidgets.QMessageBox.information(
+                self,
+                "Service Creation Results",
+                msg
             )
-            resp_json = response.json()
-        except Exception as e:
+            
+            # Automatically refresh the services list in the GUI
+            await self.refreshServicesAsync()
+        except ServiceManagerError as e:
             QtWidgets.QMessageBox.critical(
                 self,
                 "Service Creation Error",
-                f"Failed to create services: {e}"
+                str(e)
             )
-            return
-
-        # Parse the response and count successes/failures
-        data = resp_json.get("data", {})
-        entriesLink = data.get("entriesLink", [])
-        bookresult = data.get("bookresult", {})
-        details = bookresult.get("details", {})
-
-        success_count = 0
-        failed_services = []
-
-        for link in entriesLink:
-            entry_id = link.get("id")
-            if link.get("error") is None and entry_id:
-                detail = details.get(entry_id, {})
-                if detail.get("status", 0) == 0:
-                    success_count += 1
-                else:
-                    failed_services.append(entry_id)
-            else:
-                failed_services.append(entry_id if entry_id else "Unknown")
-
-        total = len(entriesLink)
-        failure_count = total - success_count
-
-        msg = f"Successfully created {success_count} service(s).\n"
-        if failure_count > 0:
-            msg += f"Failed to create {failure_count} service(s): {', '.join(failed_services)}"
-        else:
-            msg += "All services were created successfully."
-
-        QtWidgets.QMessageBox.information(
-            self,
-            "Service Creation Results",
-            msg
-        )
-
-        # Automatically refresh the services list in the GUI
-        await self.refreshServicesAsync()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Unexpected Error",
+                f"An unexpected error occurred: {str(e)}"
+            )
 
     def editSystems(self):
         from systems_editor_dialog import SystemsEditorDialog
@@ -1527,7 +1376,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dlg.exec()
 
 
-    def _onDetailsCellClicked(self, row: int, col: int):
+    async def _onDetailsCellClicked(self, row: int, col: int):
         if col != 1:
             return
 
@@ -1539,9 +1388,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not parent_id:
             return
 
-        group_svc = self.currentServices.get(parent_id)
-        if not group_svc:
-            group_svc = self.client.fetch_single_group_connection(parent_id)
+        try:
+            group_svc = await self.service_manager.fetch_group_connection(parent_id)
             if not group_svc:
                 QtWidgets.QMessageBox.information(
                     self,
@@ -1549,10 +1397,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     f"Could not locate group parent '{parent_id}' in the remote system."
                 )
                 return
-            self.currentServices[parent_id] = group_svc
-
-        dlg = GroupDetailDialog(parent_id, group_svc, parent=self)
-        dlg.exec()
+            
+            dlg = GroupDetailDialog(parent_id, group_svc, parent=self)
+            dlg.exec()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to fetch group connection: {e}")
 
     async def refreshServicesAsync(self):
         if not self.client:
@@ -1560,16 +1409,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 self, "Not Connected", "Not connected to a remote VideoIPath system."
             )
             return
-        self.startLoadingAnimation()  # Start spinner animation
+        self.startLoadingAnimation()
         self.statusMsgLabel.setText("Refreshing services...")
         try:
-            responses = await self._fetchServicesData()
-            result = self._processServicesData(responses)
+            result = await self.service_manager.fetch_services_data()
             self.onServicesRetrieved(result)
-        except Exception as e:
+        except ServiceManagerError as e:
             self.onServicesError(str(e))
+        except Exception as e:
+            self.onServicesError(f"Unexpected error: {str(e)}")
         finally:
-            self.stopLoadingAnimation()  # Stop spinner animation
+            self.stopLoadingAnimation()
             self.statusMsgLabel.setText("Services refreshed")
             await asyncio.sleep(3)
             self.statusMsgLabel.setText("")
@@ -1645,12 +1495,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def onServicesRetrieved(self, result):
         merged = result["merged"]
         used_profile_ids = result["used_profile_ids"]
-        self.currentServices = merged
-
-        # Update the profile mapping so that profile names are used.
-        self._profile_mapping = result["profile_mapping"]
-
-        # Create a model with six columns in the specified order.
+        
+        # Create a model with six columns in the specified order
         new_model = QtGui.QStandardItemModel(self)
         new_model.setHorizontalHeaderLabels(["Service ID", "Source", "Destination", "Profile", "Created By", "Start"])
         
@@ -1668,7 +1514,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 src = label
                 dst = ""
             pid = booking.get("profile", "")
-            prof_name = self._profile_mapping.get(pid, pid)
+            prof_name = self.service_manager.profile_mapping.get(pid, pid)
             created_by = booking.get("createdBy", "")
             
             # Process start time: store display text and raw timestamp for sorting
@@ -1683,7 +1529,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
             
-            # Create QStandardItem for the Start column and store the raw timestamp in UserRole.
+            # Create QStandardItem for the Start column and store the raw timestamp in UserRole
             start_item = QtGui.QStandardItem(start_str)
             if timestamp_value is not None:
                 start_item.setData(timestamp_value, QtCore.Qt.ItemDataRole.UserRole)
@@ -1704,7 +1550,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rebuildProfileCheckboxes(used_profile_ids)
         self._setTableViewColumnWidths()
         
-        # Update the total services label to count only non-group services
+        # Update the total services count
         total_services = len([svc for svc in merged.values() if svc.get("type", "") != "group"])
         self.labelServiceCount.setText(f"Total services: {total_services}")
 
@@ -1716,111 +1562,41 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(3000, lambda: self.statusMsgLabel.setText(""))
 
     def displayServiceDetails(self, svc_id: str):
-        raw_svc = self.currentServices.get(svc_id, {})
         self.tableWidgetServiceDetails.setRowCount(0)
-
-        def add_detail(field: str, val: str, user_data=None, is_link=False):
-            r = self.tableWidgetServiceDetails.rowCount()
-            self.tableWidgetServiceDetails.insertRow(r)
-
-            item_field = QtWidgets.QTableWidgetItem(field)
-            item_field.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
-            self.tableWidgetServiceDetails.setItem(r, 0, item_field)
-
-            item_val = QtWidgets.QTableWidgetItem(val)
-            item_val.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
-            if is_link:
-                brush = QtGui.QBrush(QtGui.QColor("blue"))
-                item_val.setForeground(brush)
-                font = item_val.font()
-                font.setUnderline(True)
-                item_val.setFont(font)
-                if user_data is not None:
-                    item_val.setData(QtCore.Qt.ItemDataRole.UserRole, user_data)
-            self.tableWidgetServiceDetails.setItem(r, 1, item_val)
-
-        svc_type = raw_svc.get("type", "")
-        if svc_type == "group":
-            add_detail("Service Kind", "Group-Based Service")
-        else:
-            group_par = raw_svc.get("groupParent", "")
-            if group_par:
-                add_detail("Service Kind", f"Endpoint-Based (Child of group {group_par})")
-            else:
-                add_detail("Service Kind", "Endpoint-Based Service")
-        if svc_type:
-            add_detail("type", str(svc_type))
-        booking = raw_svc.get("booking", {})
-        add_detail("serviceId", str(booking.get("serviceId", svc_id)))
-        if "allocationState" in booking:
-            add_detail("allocationState", str(booking["allocationState"]))
-        add_detail("createdBy", str(booking.get("createdBy", "")))
-        add_detail("lockedBy", str(booking.get("lockedBy", "")))
-        add_detail("isRecurrentInstance", str(booking.get("isRecurrentInstance", False)))
-        add_detail("timestamp", str(booking.get("timestamp", "")))
-        group_parent_id = raw_svc.get("groupParent", "")
-        if group_parent_id:
-            add_detail("Group Parent", group_parent_id, user_data=group_parent_id, is_link=True)
-
-        from_uid = booking.get("from", "")
-        to_uid   = booking.get("to", "")
-        from_label = self._endpoint_map.get(from_uid, from_uid)
-        to_label   = self._endpoint_map.get(to_uid, to_uid)
-        descriptor = booking.get("descriptor", {})
-        desc_label = descriptor.get("label", "")
-        add_detail("descriptor.label", desc_label)
-        add_detail("descriptor.desc", descriptor.get("desc", ""))
-        m = re.match(r'(.+?)\s*->\s*(.+)', desc_label)
-        if m:
-            from_label, to_label = m.group(1).strip(), m.group(2).strip()
-        add_detail("from label", from_label)
-        add_detail("from device", from_uid)
-        add_detail("to label", to_label)
-        add_detail("to device", to_uid)
-
-        # Convert start timestamp
-        start_ts = booking.get("start", "")
-        if start_ts:
-            try:
-                dt_val = datetime.fromtimestamp(int(start_ts) / 1000)
-                start_str = dt_val.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                start_str = start_ts
-        else:
-            start_str = ""
-        add_detail("start", start_str)
-
-        # Convert end timestamp with check for >10 years in the future
-        end_ts = booking.get("end", "")
-        if end_ts:
-            try:
-                dt_val = datetime.fromtimestamp(int(end_ts) / 1000)
-                if dt_val - datetime.now() > timedelta(days=3650):
-                    end_str = "∞"
-                else:
-                    end_str = dt_val.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                end_str = end_ts
-        else:
-            end_str = ""
-        add_detail("end", end_str)
-
-        add_detail("cancelTime", str(booking.get("cancelTime", "")))
-        prof_id = booking.get("profile", "")
-        prof_name = self._profile_mapping.get(prof_id, prof_id)
-        add_detail("profile name", prof_name)
-        add_detail("profile ID", prof_id)
-        for i, audit in enumerate(booking.get("auditHistory", []), start=1):
-            combined = (
-                f"msg: {audit.get('msg','')}\n"
-                f"user: {audit.get('user','')}\n"
-                f"rev: {audit.get('rev','')}\n"
-                f"ts: {audit.get('ts','')}"
-            )
-            add_detail(f"auditHistory[{i}]", combined)
-        res_data = raw_svc.get("res")
-        if res_data is not None:
-            add_detail("res", json.dumps(res_data, indent=2))
+        
+        try:
+            details = self.service_manager.get_service_details(svc_id)
+            
+            for field, val in details:
+                r = self.tableWidgetServiceDetails.rowCount()
+                self.tableWidgetServiceDetails.insertRow(r)
+                
+                item_field = QtWidgets.QTableWidgetItem(field)
+                item_field.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
+                self.tableWidgetServiceDetails.setItem(r, 0, item_field)
+                
+                item_val = QtWidgets.QTableWidgetItem(val)
+                item_val.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
+                
+                # Handle group parent links
+                is_link = False
+                user_data = None
+                if field == "Group Parent":
+                    is_link = True
+                    user_data = val
+                
+                if is_link:
+                    brush = QtGui.QBrush(QtGui.QColor("blue"))
+                    item_val.setForeground(brush)
+                    font = item_val.font()
+                    font.setUnderline(True)
+                    item_val.setFont(font)
+                    if user_data is not None:
+                        item_val.setData(QtCore.Qt.ItemDataRole.UserRole, user_data)
+                        
+                self.tableWidgetServiceDetails.setItem(r, 1, item_val)
+        except ServiceManagerError as e:
+            QtWidgets.QMessageBox.warning(self, "Error", str(e))
 
     def _setTableViewColumnWidths(self):
         header = self.tableViewServices.horizontalHeader()
@@ -1893,9 +1669,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 w.deleteLater()
         self.profileCheckBoxes.clear()
 
-        sorted_pids = sorted(used_profile_ids, key=lambda pid: self._profile_mapping.get(pid, pid).lower())
+        sorted_pids = sorted(used_profile_ids, 
+                        key=lambda pid: self.service_manager.profile_mapping.get(pid, pid).lower())
         for pid in sorted_pids:
-            pname = self._profile_mapping.get(pid, pid)
+            pname = self.service_manager.profile_mapping.get(pid, pid)
             cb = QtWidgets.QCheckBox(pname, self.scrollAreaWidgetProfilesFilters)
             cb.stateChanged.connect(self.onProfilesFilterChanged)
             self.layoutProfiles.addWidget(cb)
