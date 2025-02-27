@@ -19,7 +19,6 @@ import requests
 import tempfile
 import logging
 from pathlib import Path
-from map import create_network_map
 from splash_manager import SplashManager
 import styling
 from application_updater import ApplicationUpdater
@@ -458,166 +457,36 @@ class MainWindow(QtWidgets.QMainWindow):
             item = self.tableWidgetServiceDetails.item(index.row(), 0)
             logger.debug(f"Clicked cell info: Row={index.row()}, Col={index.column()}, Text='{item.text() if item else 'None'}'")
 
-            if item and item.text() == "res":
-                show_map_action = QtGui.QAction("Show Map", self)
-                show_map_action.triggered.connect(self.show_map)
-                context_menu.addAction(show_map_action)
-                logger.debug("Added 'Show Map' action to context menu for 'res' field.")
-
         logger.debug("Displaying details context menu now.")
         context_menu.exec(self.tableWidgetServiceDetails.viewport().mapToGlobal(position))
         logger.debug("Context menu closed.")
 
-    def show_map(self):
-        """Displays the network map in a dialog."""
-        logger.debug("show_map() called")
-        try:
-            # Get selected row from details table (should be the "res" row)
-            selected_indexes = self.tableWidgetServiceDetails.selectedIndexes()
-            logger.debug(f"Selected indexes in tableWidgetServiceDetails: {selected_indexes}")
-
-            if not selected_indexes:
-                logger.debug("No row selected in Service Details table. Aborting.")
-                QtWidgets.QMessageBox.information(
-                    self,
-                    "Map Information",
-                    "Please select the 'res' field in the Service Details table to view the map."
-                )
-                return  # No row selected
-
-            index = selected_indexes[0]
-            row = index.row()
+    def _save_network_image(self, map_view):
+        """Save the network map as an image file"""
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Network Map",
+            "",
+            "PNG Files (*.png);;PDF Files (*.pdf);;SVG Files (*.svg)"
+        )
+        
+        if not file_path:
+            return
             
-            # Verify we're on the "res" row
-            key_item = self.tableWidgetServiceDetails.item(row, 0)
-            if not key_item or key_item.text() != "res":
-                logger.debug(f"Selected row ({row}) is not the 'res' field. Found: {key_item.text() if key_item else 'None'}")
-                QtWidgets.QMessageBox.information(
-                    self,
-                    "Map Information",
-                    "Please select the 'res' field row to view the network map."
-                )
-                return
-                
-            res_data_str = self.tableWidgetServiceDetails.model().data(index, QtCore.Qt.ItemDataRole.DisplayRole)
-            logger.debug(f"res_data_str length: {len(res_data_str) if res_data_str else 0}")
-
-            # Attempt to parse JSON data in the 'res' field
-            try:
-                res_data = json.loads(res_data_str)
-                logger.debug("Parsed 'res' JSON successfully.")
-            except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON data in 'res' field: {e}")
-                QtWidgets.QMessageBox.critical(
-                    self, 
-                    "Map Error", 
-                    f"The 'res' field contains invalid JSON data: {str(e)}\n\nPlease ensure the service has valid network path information."
-                )
-                return
-            except TypeError as e:
-                logger.error(f"TypeError parsing 'res' data: {e}")
-                QtWidgets.QMessageBox.critical(
-                    self, 
-                    "Map Error", 
-                    f"Could not parse the 'res' field: {str(e)}\n\nThe field may be empty or contain unexpected data."
-                )
-                return
-
-            # Verify res_data has the expected structure
-            if not isinstance(res_data, dict):
-                logger.error(f"'res' data is not a dictionary. Got: {type(res_data).__name__}")
-                QtWidgets.QMessageBox.critical(
-                    self, 
-                    "Map Error", 
-                    "The 'res' field has an unexpected format. Expected a JSON object."
-                )
-                return
-                
-            if "paths" not in res_data:
-                logger.error("'res' data is missing the required 'paths' field")
-                QtWidgets.QMessageBox.critical(
-                    self, 
-                    "Map Error", 
-                    "The 'res' field does not contain path information. This service may not have an associated network path."
-                )
-                return
-
-            # Prepare data for create_network_map
-            endpoint_map = self.service_manager.endpoint_map
-            logger.debug(f"Using endpoint_map with {len(endpoint_map)} entries")
-
-            # Build services_data from self.currentServices
-            try:
-                services_data = {}
-                for service_id, service in self.currentServices.items():
-                    booking = service.get("booking", {})
-                    services_data[service_id] = {
-                        "profile_name": self._profile_mapping.get(booking.get("profile", ""), "N/A"),
-                        "createdBy": booking.get("createdBy", "N/A"),
-                        "allocationState": booking.get("allocationState", "N/A"),
-                        "start": self._format_timestamp(booking.get("start")),
-                        "end": self._format_timestamp(booking.get("end")),
-                        "serviceId": booking.get("serviceId", "N/A")
-                    }
-                logger.debug(f"Built services_data for map with {len(services_data)} services")
-            except Exception as e:
-                logger.error(f"Error building services_data: {e}")
-                # Continue with empty services_data rather than failing
-                services_data = {}
-                logger.warning("Continuing with empty services_data due to error")
-
-            # Generate the network map with comprehensive error handling
-            try:
-                network_map_view = create_network_map(
-                    res_data,
-                    parent_widget=self,
-                    endpoint_map=endpoint_map,
-                    services_data=services_data
-                )
-                # Pass the client reference to the map view for API access
-                network_map_view.client = self.client
-                logger.debug("create_network_map() returned a network map view.")
-            except Exception as e:
-                logger.exception("Unexpected exception calling create_network_map")
-                QtWidgets.QMessageBox.critical(
-                    self,
-                    "Map Generation Error",
-                    f"An unexpected error occurred while generating the map: {str(e)}"
-                )
-                return
-
-            # Create and show the dialog with the map view
-            try:
-                dialog = QtWidgets.QDialog(self)
-                dialog.setWindowTitle("Network Map")
-                dialog.resize(800, 600)
-                layout = QtWidgets.QVBoxLayout(dialog)
-
-                # Add the network map view to the dialog
-                layout.addWidget(network_map_view)
-
-                close_button = QtWidgets.QPushButton("Close", dialog)
-                close_button.clicked.connect(dialog.close)
-                layout.addWidget(close_button)
-
-                logger.debug("Launching Network Map dialog.")
-                dialog.exec()
-                logger.debug("Network Map dialog closed.")
-            except Exception as e:
-                logger.exception("Error creating network map dialog")
-                QtWidgets.QMessageBox.critical(
-                    self,
-                    "Map Display Error",
-                    f"Failed to display the network map: {str(e)}"
-                )
-
+        try:
+            # Save the figure to the selected file
+            map_view.canvas.fig.savefig(file_path, bbox_inches='tight', dpi=300)
+            QtWidgets.QMessageBox.information(
+                self,
+                "Image Saved",
+                f"Network map saved to {file_path}"
+            )
         except Exception as e:
-            # Catch any unexpected errors
-            logger.exception("An unexpected error occurred in show_map()")
+            logger.exception(f"Error saving network map image: {e}")
             QtWidgets.QMessageBox.critical(
                 self,
-                "Map Error",
-                f"An unexpected error occurred: {str(e)}"
+                "Save Error",
+                f"An error occurred while saving the image: {str(e)}"
             )
 
     def ssl_exception_handler(self, message: str) -> bool:
