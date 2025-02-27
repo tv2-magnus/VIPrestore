@@ -461,34 +461,6 @@ class MainWindow(QtWidgets.QMainWindow):
         context_menu.exec(self.tableWidgetServiceDetails.viewport().mapToGlobal(position))
         logger.debug("Context menu closed.")
 
-    def _save_network_image(self, map_view):
-        """Save the network map as an image file"""
-        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save Network Map",
-            "",
-            "PNG Files (*.png);;PDF Files (*.pdf);;SVG Files (*.svg)"
-        )
-        
-        if not file_path:
-            return
-            
-        try:
-            # Save the figure to the selected file
-            map_view.canvas.fig.savefig(file_path, bbox_inches='tight', dpi=300)
-            QtWidgets.QMessageBox.information(
-                self,
-                "Image Saved",
-                f"Network map saved to {file_path}"
-            )
-        except Exception as e:
-            logger.exception(f"Error saving network map image: {e}")
-            QtWidgets.QMessageBox.critical(
-                self,
-                "Save Error",
-                f"An error occurred while saving the image: {str(e)}"
-            )
-
     def ssl_exception_handler(self, message: str) -> bool:
         """Handle SSL certificate exceptions by prompting the user in a thread-safe way"""
         # We need to use Qt's event loop to call back to the main thread
