@@ -19,18 +19,24 @@ DefaultGroupName=VIPrestore
 OutputDir=dist\{#MyAppDirName}
 OutputBaseFilename=VIPrestore-{#MyVersion}-Setup
 SetupIconFile=logos\viprestore_icon.ico
+UninstallDisplayIcon={app}\VIPrestore {#MyVersion}.exe
 Compression=lzma2
 SolidCompression=yes
 UsePreviousAppDir=yes
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 DisableDirPage=auto
+WizardImageFile=logos\viprestore_icon.bmp
+WizardSmallImageFile=logos\viprestore_icon.bmp
 
 [Files]
-Source: "dist\{#MyAppDirName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs; Check: Is64BitInstallMode
+Source: "dist\{#MyAppDirName}\*"; DestDir: "{app}"; \
+ Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\VIPrestore"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+Name: "{group}\VIPrestore"; Filename: "{app}\{#MyAppExeName}"; \
+ WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch VIPrestore"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch VIPrestore"; \
+ Flags: nowait postinstall skipifsilent
