@@ -826,9 +826,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.client = VideoIPathClient(
                 server_url,
                 verify_ssl=True,
-                ssl_exception_callback=self.ssl_exception_handler  # Add this parameter
+                ssl_exception_callback=self.ssl_exception_handler
             )
             loop = asyncio.get_running_loop()
+            
+            # Show a connecting indicator in the status bar
+            self.statusMsgLabel.setText("Connecting...")
+            QtWidgets.QApplication.processEvents()  # Fixed: Use QtWidgets.QApplication
+            
             try:
                 await loop.run_in_executor(self.executor, self.client.login, username, password)
                 self.service_manager.set_client(self.client)
@@ -841,12 +846,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.updateUserStatus(user_status_text)
                 print(f"Logged-in User: {username_disp}")
                 print(f"Roles: {roles_str}")
+                self.statusMsgLabel.setText("Connected successfully")
+                QtCore.QTimer.singleShot(3000, lambda: self.statusMsgLabel.setText(""))
             except VideoIPathClientError as e:
-                QtWidgets.QMessageBox.critical(self, "Login Failed", str(e))
+                self.statusMsgLabel.setText("")
+                if "Connection failed" in str(e):
+                    # This is a connection timeout - show a more user-friendly message
+                    QtWidgets.QMessageBox.critical(
+                        self, 
+                        "Connection Failed", 
+                        f"Could not connect to {server_url}.\n\nThe server might be unavailable or unreachable. Please check your network connection and server status."
+                    )
+                else:
+                    QtWidgets.QMessageBox.critical(self, "Login Failed", str(e))
                 self.client = None
                 self.updateConnectionStatus(False)
                 continue
             except Exception as e:
+                self.statusMsgLabel.setText("")
                 QtWidgets.QMessageBox.critical(self, "Login Failed", str(e))
                 self.client = None
                 self.updateConnectionStatus(False)
@@ -1389,9 +1406,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.client = None
                 QtWidgets.QMessageBox.warning(self, "Session Expired", "Your session has expired. Please log in again.")
         except VideoIPathClientError as e:
+            # Don't show error dialogs for connection failures during background checks
             self.updateConnectionStatus(False)
             self.client = None
-            QtWidgets.QMessageBox.warning(self, "Session Check Failed", str(e))
+            # Only show a message if it's not a routine connection issue
+            if "Connection failed" not in str(e):
+                QtWidgets.QMessageBox.warning(self, "Session Check Failed", str(e))
+        except Exception as e:
+            self.updateConnectionStatus(False)
+            self.client = None
+            if "Connection failed" not in str(e):
+                QtWidgets.QMessageBox.warning(self, "Session Check Failed", str(e))
 
     def _rebuildProfileCheckboxes(self, used_profile_ids):
         while self.layoutProfiles.count() > 0:

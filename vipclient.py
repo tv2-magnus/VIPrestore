@@ -28,6 +28,10 @@ class VideoIPathClient:
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         domain = self.get_domain_from_url(url)
         
+        # Set a default timeout if not provided
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = 5  # 5 seconds timeout
+        
         # Check if we already have a decision for this domain
         if domain in self.ssl_exceptions and not self.session.verify:
             # User previously accepted the risk for this domain
@@ -36,6 +40,8 @@ class VideoIPathClient:
                 response.raise_for_status()
                 return response
             except requests.exceptions.RequestException as e:
+                if isinstance(e, requests.exceptions.ConnectTimeout) or isinstance(e, requests.exceptions.ConnectionError):
+                    raise VideoIPathClientError(f"Connection failed: Could not connect to {domain}. The server may be unavailable or the network connection is down.") from e
                 raise VideoIPathClientError(f"Request failed: {e}") from e
         
         # First try with SSL verification per current setting
@@ -79,6 +85,8 @@ class VideoIPathClient:
                     response.raise_for_status()
                     return response
                 except requests.exceptions.RequestException as e:
+                    if isinstance(e, requests.exceptions.ConnectTimeout) or isinstance(e, requests.exceptions.ConnectionError):
+                        raise VideoIPathClientError(f"Connection failed: Could not connect to {domain}. The server may be unavailable or the network connection is down.") from e
                     raise VideoIPathClientError(f"Request failed after SSL exception: {e}") from e
             else:
                 # User declined to proceed with insecure connection
@@ -86,6 +94,10 @@ class VideoIPathClient:
                     f"SSL certificate verification failed for {domain}. "
                     "Connection aborted per user request."
                 ) from ssl_err
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as conn_err:
+            raise VideoIPathClientError(f"Connection failed: Could not connect to {domain}. The server may be unavailable or the network connection is down.") from conn_err
+        except requests.exceptions.RequestException as e:
+            raise VideoIPathClientError(f"Request failed: {e}") from e
 
     def login(self, username: str, password: str) -> None:
         """
