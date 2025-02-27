@@ -242,6 +242,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.menuHelp.addAction(self.actionAbout)
         self.menuHelp.addSeparator()
 
+        self.actionHelp = QtGui.QAction("User Manual", self)
+        self.actionHelp.setShortcut("Ctrl+H")
+        self.menuHelp.addAction(self.actionHelp)
+        self.actionHelp.triggered.connect(self.showHelpManual)
+
         # Connect Action Signals
         self.actionLogin.triggered.connect(lambda: asyncio.create_task(self.doLogin()))
         self.actionLogout.triggered.connect(self.doLogout)
@@ -378,6 +383,35 @@ class MainWindow(QtWidgets.QMainWindow):
         # --- End Context Menu for Details Table ---
 
         QtCore.QTimer.singleShot(100, self.initialize_table_models)
+
+    def showHelpManual(self):
+        help_dialog = QtWidgets.QDialog(self)
+        help_dialog.setWindowTitle("VIPrestore - User Manual")
+        help_dialog.resize(800, 600)
+        
+        layout = QtWidgets.QVBoxLayout(help_dialog)
+        
+        # Use QTextBrowser for rich text display with markdown support
+        text_browser = QtWidgets.QTextBrowser(help_dialog)
+        text_browser.setOpenExternalLinks(True)
+        
+        # Load the manual content
+        manual_path = resource_path("manual.md")
+        try:
+            with open(manual_path, "r", encoding="utf-8") as f:
+                manual_content = f.read()
+            text_browser.setMarkdown(manual_content)
+        except Exception as e:
+            text_browser.setPlainText(f"Error loading manual: {str(e)}")
+        
+        layout.addWidget(text_browser)
+        
+        # Add a close button
+        close_button = QtWidgets.QPushButton("Close", help_dialog)
+        close_button.clicked.connect(help_dialog.close)
+        layout.addWidget(close_button)
+        
+        help_dialog.exec()
 
     def showContextMenu(self, position):
         # Create a context menu
