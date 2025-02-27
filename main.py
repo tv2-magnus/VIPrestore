@@ -3,6 +3,7 @@ import os
 import re
 import json
 import asyncio
+import math
 from datetime import datetime
 from qasync import QEventLoop
 from PyQt6 import QtWidgets, uic, QtGui, QtCore
@@ -23,7 +24,6 @@ from splash_manager import SplashManager
 import styling
 from application_updater import ApplicationUpdater
 from constants import APP_NAME
-from PyQt6 import QtWebEngineWidgets
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -317,7 +317,9 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.tableWidgetServiceDetails.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectItems)
         self.tableWidgetServiceDetails.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        self.tableWidgetServiceDetails.cellClicked.connect(self._onDetailsCellClicked)
+        self.tableWidgetServiceDetails.cellClicked.connect(
+            lambda row, col: asyncio.create_task(self._onDetailsCellClicked(row, col))
+        )
         self.tableWidgetServiceDetails.setAlternatingRowColors(True)
 
         # Setup Session Timer
@@ -555,6 +557,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         "allocationState": booking.get("allocationState", "N/A"),
                         "start": self._format_timestamp(booking.get("start")),
                         "end": self._format_timestamp(booking.get("end")),
+                        "serviceId": booking.get("serviceId", "N/A")
                     }
                 logger.debug(f"Built services_data for map with {len(services_data)} services")
             except Exception as e:
@@ -563,15 +566,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 services_data = {}
                 logger.warning("Continuing with empty services_data due to error")
 
-            # Generate the map HTML with comprehensive error handling
+            # Generate the network map with comprehensive error handling
             try:
-                html_string = create_network_map(
+                network_map_view = create_network_map(
                     res_data,
                     parent_widget=self,
                     endpoint_map=endpoint_map,
                     services_data=services_data
                 )
-                logger.debug("create_network_map() returned HTML data.")
+                # Pass the client reference to the map view for API access
+                network_map_view.client = self.client
+                logger.debug("create_network_map() returned a network map view.")
             except Exception as e:
                 logger.exception("Unexpected exception calling create_network_map")
                 QtWidgets.QMessageBox.critical(
@@ -581,32 +586,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 return
 
-            if not html_string:
-                logger.debug("No HTML string returned (error already handled). Aborting.")
-                return
-
-            # Create and show the dialog with QWebEngineView
+            # Create and show the dialog with the map view
             try:
                 dialog = QtWidgets.QDialog(self)
                 dialog.setWindowTitle("Network Map")
                 dialog.resize(800, 600)
                 layout = QtWidgets.QVBoxLayout(dialog)
 
-                web_view = QtWebEngineWidgets.QWebEngineView(dialog)
-                web_view.setHtml(html_string)
-                layout.addWidget(web_view)
-
-                # Add error handler for web view loading failures
-                def handle_load_finished(success):
-                    if not success:
-                        logger.error("QWebEngineView failed to load the HTML content")
-                        QtWidgets.QMessageBox.warning(
-                            dialog,
-                            "Map Rendering Warning",
-                            "The map content could not be fully rendered. The visualization may be incomplete."
-                        )
-                
-                web_view.loadFinished.connect(handle_load_finished)
+                # Add the network map view to the dialog
+                layout.addWidget(network_map_view)
 
                 close_button = QtWidgets.QPushButton("Close", dialog)
                 close_button.clicked.connect(dialog.close)
@@ -631,6 +619,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Map Error",
                 f"An unexpected error occurred: {str(e)}"
             )
+
     def ssl_exception_handler(self, message: str) -> bool:
         """Handle SSL certificate exceptions by prompting the user in a thread-safe way"""
         # We need to use Qt's event loop to call back to the main thread
