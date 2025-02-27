@@ -122,7 +122,13 @@ class ApplicationUpdater:
         return f"{size:.2f} {units[idx]}"
 
     def check_for_updates_async(self):
-        # Run the check in a separate thread to avoid blocking the UI
+        """Check for updates asynchronously while handling splash screen properly."""
+        # Ensure main window shows after minimum splash time
+        if self.splash and hasattr(self.splash, 'min_splash_time'):
+            QtCore.QTimer.singleShot(self.splash.min_splash_time, 
+                                    lambda: self.splash.finish(self.parent))
+        
+        # Run the check in a separate thread
         self.thread = QtCore.QThread()
         self.worker = UpdateCheckWorker(self)
         self.worker.moveToThread(self.thread)
@@ -140,13 +146,12 @@ class ApplicationUpdater:
         self.thread.quit()
         self.thread.wait()
         
-        # Close splash if it exists
-        if self.splash:
-            self.splash.close()
+        # Don't close splash directly - finish() was called in check_for_updates_async
         
         if not update_info:
-            # No update available, just show the main window
-            self.parent.show()
+            # No update available, just show the main window if not already visible
+            if self.parent and not self.parent.isVisible():
+                self.parent.show()
             return
         
         # Show update dialog
@@ -159,11 +164,11 @@ class ApplicationUpdater:
         self.thread.quit()
         self.thread.wait()
         
-        # Close splash and show main window
-        if self.splash:
-            self.splash.close()
+        # Don't close splash directly - finish() was called in check_for_updates_async
         
-        self.parent.show()
+        # Show main window if not already visible
+        if self.parent and not self.parent.isVisible():
+            self.parent.show()
     
     def show_update_dialog(self, update_info):
         latest_version = update_info.get("tag_name", "").strip()

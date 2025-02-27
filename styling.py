@@ -150,30 +150,72 @@ class AppearanceManager:
         main_window.tableViewServices.setStyleSheet(table_style)
         logger.debug("Applied table styles")
     
-    def apply_all(self, app, main_window):
+    def setup_essential(self, app, main_window):
         """
-        Apply all styling to the application in one call.
+        Apply only essential styling needed for initial display.
         
         Args:
             app: QApplication instance
             main_window: MainWindow instance
         """
-        self.load_custom_fonts()
-        self.apply_fonts(app, main_window)
+        # Set application icon - important for window appearance
         self.set_app_icon(app, main_window)
+        
+        # Load font files but don't apply yet
+        self.load_custom_fonts()
+        logger.debug("Applied essential styling")
+        
+    def setup_complete(self, app, main_window):
+        """
+        Apply complete styling that can be deferred until after window is shown.
+        
+        Args:
+            app: QApplication instance
+            main_window: MainWindow instance
+        """
+        # Apply fonts to UI
+        self.apply_fonts(app, main_window)
+        
+        # Apply table styles - can be deferred
         self.apply_table_styles(main_window)
-        logger.debug("Applied all styling to application")
+        
+        # Update table fonts
+        if hasattr(main_window, 'update_table_fonts'):
+            main_window.update_table_fonts()
+        
+        logger.debug("Applied complete styling")
 
 
 # Singleton instance for easy access
 appearance = AppearanceManager()
 
-def setup_appearance(app, main_window):
+def setup_essential_styling(app, main_window):
     """
-    Convenience function to set up all appearance aspects.
+    Convenience function to set up essential styling.
     
     Args:
         app: QApplication instance
         main_window: MainWindow instance
     """
-    appearance.apply_all(app, main_window)
+    appearance.setup_essential(app, main_window)
+
+def setup_complete_styling(app, main_window):
+    """
+    Convenience function to set up complete styling.
+    
+    Args:
+        app: QApplication instance
+        main_window: MainWindow instance
+    """
+    appearance.setup_complete(app, main_window)
+
+def setup_appearance(app, main_window):
+    """
+    Convenience function to set up all appearance aspects (legacy function).
+    
+    Args:
+        app: QApplication instance
+        main_window: MainWindow instance
+    """
+    appearance.setup_essential(app, main_window)
+    appearance.setup_complete(app, main_window)

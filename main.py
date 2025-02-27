@@ -178,6 +178,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Add this right after super().__init__()
         self.bold_font_family = None  # Will be set from main()
+        
+        # Initialize current services storage
+        self.currentServices = {}
 
         # Clean up menu bar: create a new organized menu bar for improved UX
         menubar = self.menuBar()
@@ -215,10 +218,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # --- Cancel Services Action ---
         self.actionCancelSelectedServices = QtGui.QAction("Cancel Selected Services", self)
-        self.actionCancelSelectedServices.setShortcut("Ctrl+D")  # Or another shortcut
-        self.actionCancelSelectedServices.setEnabled(False)  # Initially disabled
-        self.menuTools.addAction(self.actionCancelSelectedServices)  # Add to Tools menu
-        self.actionCancelSelectedServices.triggered.connect(lambda: asyncio.create_task(self.cancelSelectedServices())) #Connect
+        self.actionCancelSelectedServices.setShortcut("Ctrl+D")
+        self.actionCancelSelectedServices.setEnabled(False)
+        self.menuTools.addAction(self.actionCancelSelectedServices)
+        self.actionCancelSelectedServices.triggered.connect(lambda: asyncio.create_task(self.cancelSelectedServices()))
         # --- End Cancel Services Action ---
 
         # Add actions to File menu with grouping separators
@@ -234,7 +237,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.menuTools.addAction(self.actionRefresh)
         self.menuTools.addSeparator()
         self.menuTools.addAction(self.actionEditSystems)
-        # Separator is already placed, no action needed here.
 
         # Add actions to Help menu with a separator
         self.menuHelp.addAction(self.actionAbout)
@@ -260,7 +262,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Executor for blocking calls
         self.executor = ThreadPoolExecutor()
 
-        # Configure Service View Table
+        # Basic table configuration - don't create models yet
         self.tableViewServices.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tableViewServices.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tableViewServices.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
@@ -374,6 +376,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tableWidgetServiceDetails.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.tableWidgetServiceDetails.customContextMenuRequested.connect(self.showDetailsContextMenu)
         # --- End Context Menu for Details Table ---
+
+        QtCore.QTimer.singleShot(100, self.initialize_table_models)
 
     def showContextMenu(self, position):
         # Create a context menu
@@ -729,6 +733,20 @@ class MainWindow(QtWidgets.QMainWindow):
             bold_font = QtGui.QFont(self.bold_font_family, 10, QtGui.QFont.Weight.Bold)
             self.tableViewServices.setFont(bold_font)
             self.tableWidgetServiceDetails.setFont(bold_font)
+
+    def initialize_table_models(self):
+        """Lazily initialize table models and related data structures.
+        Called after the window is visible to improve startup time."""
+        
+        # Configure Service View Table - deferred initialization
+        self.serviceModel = QtGui.QStandardItemModel(self)
+        self.filterProxy = ServicesFilterProxy(self)
+        self.filterProxy.setSourceModel(self.serviceModel)
+        self.tableViewServices.setModel(self.filterProxy)
+        self.tableViewServices.selectionModel().selectionChanged.connect(self.onServiceSelectionChanged)
+        
+        # Log completion
+        logger.debug("Table models initialized")
 
     def set_bold_font_family(self, font_family):
         print(f"Setting bold font family to: {font_family}")
@@ -1462,15 +1480,19 @@ def main():
     logger.debug("Creating MainWindow instance (hidden).")
     main_window = MainWindow()
     
+    # Apply essential styling first
+    styling.setup_essential_styling(app, main_window)
+    
     # Ensure the remote systems configuration is in a user-writable location.
-    ensure_remote_systems_config()
-
-    # Apply application styling
-    styling.setup_appearance(app, main_window)
-
+    # This is a file operation that could be done after showing the window
+    QtCore.QTimer.singleShot(500, ensure_remote_systems_config)
+    
     # Check for updates using the ApplicationUpdater
     updater = ApplicationUpdater(main_window, splash_manager)
     updater.check_for_updates_async()
+    
+    # Apply complete styling after the window is shown
+    QtCore.QTimer.singleShot(100, lambda: styling.setup_complete_styling(app, main_window))
     
     logger.debug("Starting the event loop.")
     with loop:

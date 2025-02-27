@@ -90,7 +90,11 @@ class SplashManager:
         if self.splash and self.splash.isVisible():
             self.splash.close()
             logger.debug("Splash screen closed")
-    
+
+    def is_finish_scheduled(self):
+        """Check if finish is already scheduled (for coordination with update checker)."""
+        return hasattr(self, '_finish_scheduled') and self._finish_scheduled
+
     def finish(self, main_window):
         """
         Finish the splash screen, respecting minimum display time.
@@ -100,6 +104,9 @@ class SplashManager:
         """
         if not self.splash:
             return
+            
+        # Mark that finish has been scheduled to avoid duplicate timers
+        self._finish_scheduled = True
             
         # Check if minimum time has elapsed
         if self.start_time:
