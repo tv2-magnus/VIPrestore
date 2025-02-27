@@ -37,7 +37,7 @@ logging.basicConfig(
     filename=str(log_dir / log_filename),
     filemode='w',  # 'w' instead of 'a' since each file is new
     format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG
+    level=logging.INFO
 )
 logging.debug("Application started")
 
