@@ -420,7 +420,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Create a "Save Selected" action for the context menu
         save_action = QtGui.QAction("Save Selected Services", self)
-        save_action.triggered.connect(self.saveSelectedServices)  # Connect to your existing method
+        save_action.triggered.connect(lambda: asyncio.create_task(self.saveSelectedServices()))  # Fix: create asyncio task
         context_menu.addAction(save_action)
 
         # --- Copy Cell Action ---
