@@ -1479,6 +1479,9 @@ def main():
     # Create the main window (hidden)
     logger.debug("Creating MainWindow instance (hidden).")
     main_window = MainWindow()
+
+    splash_manager.show()
+    splash_manager.finish(main_window)
     
     # Apply essential styling first
     styling.setup_essential_styling(app, main_window)

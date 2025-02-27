@@ -20,6 +20,7 @@ class SplashManager:
         self.spinner_movie = None
         self.start_time = None
         self.min_splash_time = 2000  # 2 seconds minimum display
+        self.main_window = None  # Store the main window reference
         self._create_splash_screen()
     
     def _create_splash_screen(self):
@@ -84,7 +85,19 @@ class SplashManager:
             self.app.processEvents()  # Force update
             self.start_time = QtCore.QDateTime.currentDateTime()
             logger.debug("Splash screen displayed")
-    
+            
+            # Always set a hard timer to close after exactly min_splash_time
+            QtCore.QTimer.singleShot(self.min_splash_time, self._check_and_finish)
+
+    def _check_and_finish(self):
+        """Check if main window is set and finish splash screen after minimum time."""
+        if self.main_window:
+            self._do_finish(self.main_window)
+        else:
+            logger.debug("Main window not set yet, waiting...")
+            # Retry in 100ms if main window isn't set yet
+            QtCore.QTimer.singleShot(100, self._check_and_finish)
+
     def close(self):
         """Close the splash screen immediately."""
         if self.splash and self.splash.isVisible():
