@@ -7,7 +7,7 @@ import tempfile
 import logging
 import requests
 from PyQt6 import QtCore
-from typing import Dict, Optional
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 

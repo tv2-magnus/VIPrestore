@@ -4,8 +4,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Tuple, Any
-
-from vipclient import VideoIPathClient, VideoIPathClientError
+from vipclient import VideoIPathClient
 
 logger = logging.getLogger(__name__)
 

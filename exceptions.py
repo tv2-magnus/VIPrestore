@@ -3,9 +3,7 @@ exceptions.py - Exception handling infrastructure for VIPrestore
 """
 
 import sys
-import traceback
 import logging
-from typing import Optional, Callable
 from PyQt6 import QtWidgets, QtCore
 import strings
 

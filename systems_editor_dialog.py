@@ -1,7 +1,6 @@
 from pathlib import Path
-import os
 import json
-from PyQt6 import QtWidgets, QtCore, QtGui
+from PyQt6 import QtWidgets, QtCore
 
 class SystemsEditorDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, config_dir: Path | None = None):

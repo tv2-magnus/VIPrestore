@@ -1,5 +1,4 @@
 import logging
-import os
 from PyQt6 import QtWidgets, QtGui, QtCore
 from utils import resource_path
 

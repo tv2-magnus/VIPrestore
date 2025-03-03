@@ -1,8 +1,3 @@
-"""
-constants.py - Central location for application constants
-"""
-
-import os
 import logging
 from utils import resource_path
 

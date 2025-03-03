@@ -6,7 +6,6 @@ import os
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from datetime import datetime
 from constants import APP_NAME
 
 def configure_logging():
