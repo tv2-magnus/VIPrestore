@@ -3,12 +3,13 @@ import os
 import requests
 import subprocess
 import tempfile
-import strings
 from PyQt6 import QtWidgets, QtCore
 from typing import Optional
-
+from downloads import DownloadWorker
 from update_dialog import UpdateDialog
-from utils import resource_path
+from utils import resource_path, schedule_ui_task
+from downloads import DownloadWorker  # Import the centralized DownloadWorker
+import strings
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,8 @@ class ApplicationUpdater:
         self.current_version = self._get_current_version()
         self.worker = None
         self.thread = None
+        self.download_thread = None
+        self.download_worker = None
     
     def _get_current_version(self) -> str:
         """Get the current version from constants module."""
@@ -123,8 +126,7 @@ class ApplicationUpdater:
         """Check for updates asynchronously while handling splash screen properly."""
         # Ensure main window shows after minimum splash time
         if self.splash and hasattr(self.splash, 'min_splash_time'):
-            QtCore.QTimer.singleShot(self.splash.min_splash_time, 
-                                    lambda: self.splash.finish(self.parent))
+            schedule_ui_task(lambda: self.splash.finish(self.parent), self.splash.min_splash_time)
         
         # Run the check in a separate thread
         self.thread = QtCore.QThread()
@@ -205,7 +207,11 @@ class ApplicationUpdater:
         """
         assets = update_info.get("assets", [])
         if not assets:
-            QtWidgets.QMessageBox.critical(self.parent, "Update Error", "No downloadable assets found in the latest release.")
+            QtWidgets.QMessageBox.critical(
+                self.parent, 
+                strings.DIALOG_TITLE_ERROR, 
+                "No downloadable assets found in the latest release."
+            )
             self.parent.show()
             return
 
@@ -271,7 +277,11 @@ class ApplicationUpdater:
         self.parent.show()
 
     def handle_download_error(self, error_message: str, progress_dialog: QtWidgets.QProgressDialog, thread: QtCore.QThread):
-        QtWidgets.QMessageBox.critical(self.parent, "Update Error", f"Download failed: {error_message}")
+        QtWidgets.QMessageBox.critical(
+            self.parent, 
+            strings.DIALOG_TITLE_ERROR, 
+            f"Download failed: {error_message}"
+        )
         progress_dialog.close()
         thread.quit()
         thread.wait()
@@ -318,79 +328,3 @@ class UpdateCheckWorker(QtCore.QObject):
             self.finished.emit(update_info)
         except Exception as e:
             self.error.emit(str(e))
-
-
-class DownloadWorker(QtCore.QObject):
-    """Worker object that handles the file download in a separate thread."""
-    cancelled = QtCore.pyqtSignal()
-    progressChanged = QtCore.pyqtSignal(int)
-    statusTextChanged = QtCore.pyqtSignal(str)
-    finished = QtCore.pyqtSignal(str)
-    errorOccurred = QtCore.pyqtSignal(str)
-
-    def __init__(self, download_url: str, filename: str, headers: dict, parent=None):
-        super().__init__(parent)
-        self.download_url = download_url
-        self.filename = filename
-        self.headers = headers
-        self._cancelled = False
-    
-    def _human_readable_size(self, size_in_bytes: int) -> str:
-        """Helper to convert bytes into a more readable string."""
-        units = ["B", "KB", "MB", "GB", "TB"]
-        size = float(size_in_bytes)
-        idx = 0
-        while size >= 1024 and idx < len(units) - 1:
-            size /= 1024
-            idx += 1
-        return f"{size:.2f} {units[idx]}"
-
-    @QtCore.pyqtSlot()
-    def start_download(self):
-        try:
-            logger.debug("Starting download process")
-            temp_dir = tempfile.gettempdir()
-            file_path = os.path.join(temp_dir, self.filename)
-            logger.debug(f"Download target path: {file_path}")
-
-            response = requests.get(self.download_url, stream=True, headers=self.headers, timeout=30)
-            logger.debug(f"Response status: {response.status_code}")
-            response.raise_for_status()
-
-            total_size = int(response.headers.get('content-length', 0))
-            logger.debug(f"Content length: {total_size} bytes")
-            downloaded_size = 0
-            chunk_size = 1024 * 1024
-
-            with open(file_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=chunk_size):
-                    if self._cancelled:
-                        logger.debug("Download cancelled")
-                        f.close()
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
-                        self.cancelled.emit()  # Add this line
-                        return
-                    if chunk:
-                        f.write(chunk)
-                        downloaded_size += len(chunk)
-                        if total_size > 0:
-                            percent = int((downloaded_size / total_size) * 100)
-                            if percent % 10 == 0:  # Log every 10%
-                                logger.debug(f"Download progress: {percent}%")
-                            self.progressChanged.emit(percent)
-                            self.statusTextChanged.emit(
-                                f"Downloading... {self._human_readable_size(downloaded_size)} of {self._human_readable_size(total_size)}"
-                            )
-
-            logger.debug(f"Download completed successfully: {file_path}")
-            self.progressChanged.emit(100)
-            self.finished.emit(file_path)
-
-        except Exception as e:
-            logger.error(f"Error during download: {e}", exc_info=True)
-            self.errorOccurred.emit(str(e))
-
-    def cancel_download(self):
-        self._cancelled = True
-        self.statusTextChanged.emit("Cancelling download...")
