@@ -12,7 +12,7 @@ from load_services_dialog import LoadServicesDialog
 from group_detail_dialog import GroupDetailDialog
 from concurrent.futures import ThreadPoolExecutor
 from services_filter import ServicesFilterProxy
-from utils import resource_path
+from utils import resource_path, schedule_ui_task
 from service_manager import ServiceManager, ServiceManagerError
 import requests
 import tempfile
@@ -21,9 +21,11 @@ from pathlib import Path
 from splash_manager import SplashManager
 import styling
 from application_updater import ApplicationUpdater
-from constants import APP_NAME, get_version
+from constants import APP_NAME
 import strings
 from logging_config import configure_logging
+from downloads import DownloadWorker
+from exceptions import exception_handler
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -111,65 +113,6 @@ def ensure_remote_systems_config():
                 logging.error(f"Failed to copy default remotesystems.json: {e}")
         else:
             logging.debug("Default remotesystems.json not found in resources.")
-
-class DownloadWorker(QtCore.QObject):
-    """Worker object that handles the file download in a separate thread."""
-
-    progressChanged = QtCore.pyqtSignal(int)              # Emits the percent complete
-    statusTextChanged = QtCore.pyqtSignal(str)            # Emits the text for the progress label
-    finished = QtCore.pyqtSignal(str)                     # Emits the file path on successful download
-    errorOccurred = QtCore.pyqtSignal(str)                # Emits the error message on failure
-
-    def __init__(self, download_url: str, filename: str, headers: dict, parent=None):
-        super().__init__(parent)
-        self.download_url = download_url
-        self.filename = filename
-        self.headers = headers
-        self._cancelled = False  # Flag to handle cancel
-
-    @QtCore.pyqtSlot()
-    def start_download(self):
-        """Performs the actual download, chunk by chunk."""
-        try:
-            temp_dir = tempfile.gettempdir()
-            file_path = os.path.join(temp_dir, self.filename)
-
-            response = requests.get(self.download_url, stream=True, headers=self.headers, timeout=30)
-            response.raise_for_status()
-
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded_size = 0
-
-            chunk_size = 1024 * 1024  # 1MB chunk size
-
-            with open(file_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=chunk_size):
-                    if self._cancelled:
-                        # Delete partial file if user canceled
-                        f.close()
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
-                        return
-                    if chunk:
-                        f.write(chunk)
-                        downloaded_size += len(chunk)
-                        if total_size > 0:
-                            percent = int((downloaded_size / total_size) * 100)
-                            self.progressChanged.emit(percent)
-                            self.statusTextChanged.emit(
-                                f"Downloading... {human_readable_size(downloaded_size)} of {human_readable_size(total_size)}"
-                            )
-
-            self.progressChanged.emit(100)
-            self.finished.emit(file_path)
-
-        except Exception as e:
-            logging.error(f"Error during download: {e}")
-            self.errorOccurred.emit(str(e))
-
-    def cancel_download(self):
-        """Sets a flag so the download loop can stop."""
-        self._cancelled = True
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -382,7 +325,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tableWidgetServiceDetails.customContextMenuRequested.connect(self.showDetailsContextMenu)
         # --- End Context Menu for Details Table ---
 
-        QtCore.QTimer.singleShot(100, self.initialize_table_models)
+        schedule_ui_task(self.initialize_table_models, 100)
 
     def showHelpManual(self):
         help_dialog = QtWidgets.QDialog(self)
@@ -1115,7 +1058,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def onServicesError(self, error_msg):
         QtWidgets.QMessageBox.critical(self, "Error Refreshing Services", error_msg)
         self.statusMsgLabel.setText("Error refreshing services")
-        QtCore.QTimer.singleShot(3000, lambda: self.statusMsgLabel.setText(""))
+        schedule_ui_task(lambda: self.statusMsgLabel.setText(""), 3000)
 
     def displayServiceDetails(self, svc_id: str):
         self.tableWidgetServiceDetails.setRowCount(0)
@@ -1236,11 +1179,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def onSourceFilterChanged(self, text: str):
         self.filterProxy.setSourceFilterText(text)
-        QtCore.QTimer.singleShot(0, self.updateServiceSelection)
+        schedule_ui_task(self.updateServiceSelection)
 
     def onDestinationFilterChanged(self, text: str):
         self.filterProxy.setDestinationFilterText(text)
-        QtCore.QTimer.singleShot(0, self.updateServiceSelection)
+        schedule_ui_task(self.updateServiceSelection)
 
     def onTimeFilterChanged(self):
         if self.checkBoxEnableTimeFilter.isChecked():
@@ -1254,7 +1197,7 @@ class MainWindow(QtWidgets.QMainWindow):
             start_dt = None
             end_dt = None
         self.filterProxy.setStartRange(start_dt, end_dt)
-        QtCore.QTimer.singleShot(0, self.updateServiceSelection)
+        schedule_ui_task(self.updateServiceSelection)
 
     def onProfilesFilterChanged(self):
         chosen = []
@@ -1262,7 +1205,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if cb.isChecked():
                 chosen.append(pname)
         self.filterProxy.setActiveProfiles(chosen)
-        QtCore.QTimer.singleShot(0, self.updateServiceSelection)
+        schedule_ui_task(self.updateServiceSelection)
 
     def onResetFilters(self):
         self.lineEditSourceFilter.clear()
@@ -1273,7 +1216,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dateTimeEditEnd.setDateTime(QtCore.QDateTime(today, QtCore.QTime(23, 59, 59)))
         for cb, _ in self.profileCheckBoxes:
             cb.setChecked(False)
-        QtCore.QTimer.singleShot(0, self.updateServiceSelection)
+        schedule_ui_task(self.updateServiceSelection)
 
     def onServiceClicked(self, index: QtCore.QModelIndex):
         selected_indexes = self.tableViewServices.selectionModel().selectedRows()
@@ -1332,6 +1275,11 @@ def main():
     
     logger.debug("Starting application and creating QApplication...")
     app = QtWidgets.QApplication(sys.argv)
+    
+    # Set up exception handler
+    exception_handler.set_application(app)
+    exception_handler.install_global_handler()
+    
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
     
@@ -1342,7 +1290,10 @@ def main():
     # Create the main window (hidden)
     logger.debug("Creating MainWindow instance (hidden).")
     main_window = MainWindow()
-
+    
+    # Update exception handler with main window reference
+    exception_handler.set_application(app, main_window)
+    
     splash_manager.show()
     splash_manager.finish(main_window)
     
@@ -1351,14 +1302,14 @@ def main():
     
     # Ensure the remote systems configuration is in a user-writable location.
     # This is a file operation that could be done after showing the window
-    QtCore.QTimer.singleShot(500, ensure_remote_systems_config)
+    schedule_ui_task(ensure_remote_systems_config, 500)
     
     # Check for updates using the ApplicationUpdater
     updater = ApplicationUpdater(main_window, splash_manager)
     updater.check_for_updates_async()
     
     # Apply complete styling after the window is shown
-    QtCore.QTimer.singleShot(100, lambda: styling.setup_complete_styling(app, main_window))
+    schedule_ui_task(lambda: styling.setup_complete_styling(app, main_window), 100)
     
     logger.debug("Starting the event loop.")
     with loop:
