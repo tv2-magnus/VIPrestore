@@ -14,8 +14,6 @@ from concurrent.futures import ThreadPoolExecutor
 from services_filter import ServicesFilterProxy
 from utils import resource_path, schedule_ui_task
 from service_manager import ServiceManager, ServiceManagerError
-import requests
-import tempfile
 import logging
 from pathlib import Path
 from splash_manager import SplashManager
@@ -24,7 +22,6 @@ from application_updater import ApplicationUpdater
 from constants import APP_NAME
 import strings
 from logging_config import configure_logging
-from downloads import DownloadWorker
 from exceptions import exception_handler
 
 logger = logging.getLogger(__name__)
@@ -194,7 +191,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.actionLogin.triggered.connect(lambda: asyncio.create_task(self.doLogin()))
         self.actionLogout.triggered.connect(self.doLogout)
         self.actionLoadServices.triggered.connect(lambda: asyncio.create_task(self.load_and_create_services()))
-        self.actionSaveSelectedServices.triggered.connect(self.saveSelectedServices)
+        self.actionSaveSelectedServices.triggered.connect(lambda: asyncio.create_task(self.saveSelectedServices()))
         self.actionExit.triggered.connect(self.close)
         self.actionRefresh.triggered.connect(lambda: asyncio.create_task(self.refreshServicesAsync()))
         self.actionEditSystems.triggered.connect(self.editSystems)
@@ -362,7 +359,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Create a "Save Selected" action for the context menu
         save_action = QtGui.QAction("Save Selected Services", self)
-        save_action.triggered.connect(self.saveSelectedServices)  # Connect to your existing method
+        save_action.triggered.connect(lambda: asyncio.create_task(self.saveSelectedServices()))
         context_menu.addAction(save_action)
 
         # --- Copy Cell Action ---
