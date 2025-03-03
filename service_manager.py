@@ -492,7 +492,7 @@ class ServiceManager:
     
     def prepare_services_for_export(self, service_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         """
-        Prepare services for export to file.
+        Prepare services for export to file. Original timestamps are removed.
         
         Args:
             service_ids: List of service IDs to export.
@@ -512,17 +512,6 @@ class ServiceManager:
             
             booking = service_data.get("booking", {})
             
-            # Parse timestamps
-            try:
-                start_ts = int(booking.get("start", 0))
-            except:
-                start_ts = 0
-                
-            try:
-                end_ts = int(booking.get("end", 0))
-            except:
-                end_ts = 0
-            
             # Extract device labels from descriptor label if formatted as "Source -> Destination"
             descriptor = booking.get("descriptor", {})
             descriptor_label = descriptor.get("label", "")
@@ -541,9 +530,9 @@ class ServiceManager:
             
             modern_entry = {
                 "scheduleInfo": {
-                    "startTimestamp": start_ts,
+                    "startTimestamp": None,  # Set to None instead of using start_ts
                     "type": "once",
-                    "endTimestamp": end_ts
+                    "endTimestamp": None     # Set to None instead of using end_ts
                 },
                 "locked": False,
                 "serviceDefinition": {
