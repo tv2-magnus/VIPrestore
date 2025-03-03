@@ -26,8 +26,26 @@ from exceptions import exception_handler
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-log_dir = Path(os.getenv('LOCALAPPDATA')) / APP_NAME
-log_dir.mkdir(parents=True, exist_ok=True)
+
+# Cross-platform log directory determination
+def get_app_log_dir() -> Path:
+    """
+    Returns a Path object for a user-writable application log directory.
+    On Windows, uses LOCALAPPDATA; on macOS, uses Application Support; on Linux, uses XDG_CONFIG_HOME.
+    The directory is created if it doesn't exist.
+    """
+    if sys.platform.startswith("win"):
+        log_dir = Path(os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / APP_NAME
+    elif sys.platform == "darwin":
+        log_dir = Path.home() / "Library" / "Application Support" / APP_NAME
+    else:
+        log_dir = Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config")) / APP_NAME
+    
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+# Use the cross-platform function for log directory
+log_dir = get_app_log_dir()
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 log_filename = f"viprestore_{timestamp}.log"
 
@@ -47,7 +65,7 @@ def get_user_config_dir() -> Path:
     The directory is created if it doesn't exist.
     """
     if sys.platform.startswith("win"):
-        config_dir = Path(os.getenv("LOCALAPPDATA")) / "VIPrestore"
+        config_dir = Path(os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "VIPrestore"
     elif sys.platform == "darwin":
         config_dir = Path.home() / "Library" / "Application Support" / "VIPrestore"
     else:

@@ -3,6 +3,7 @@ logging_config.py - Centralized logging configuration for VIPrestore
 """
 
 import os
+import sys
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -16,8 +17,14 @@ def configure_logging():
     Returns:
         str: Path to the log file
     """
-    # Determine log directory
-    log_dir = Path(os.getenv('LOCALAPPDATA', os.path.expanduser('~'))) / APP_NAME
+    # Cross-platform log directory determination
+    if sys.platform.startswith("win"):
+        log_dir = Path(os.getenv('LOCALAPPDATA', str(Path.home() / "AppData" / "Local"))) / APP_NAME
+    elif sys.platform == "darwin":
+        log_dir = Path.home() / "Library" / "Application Support" / APP_NAME
+    else:
+        log_dir = Path(os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / APP_NAME
+        
     log_dir.mkdir(parents=True, exist_ok=True)
     
     # Create log filename with app name
