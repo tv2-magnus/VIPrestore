@@ -21,7 +21,9 @@ from pathlib import Path
 from splash_manager import SplashManager
 import styling
 from application_updater import ApplicationUpdater
-from constants import APP_NAME
+from constants import APP_NAME, get_version
+import strings
+from logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -895,19 +897,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     def showAbout(self):
-        def get_version():
-            """Reads the version from version.txt"""
-            try:
-                with open(resource_path("version.txt"), "r") as file:
-                    return file.read().strip()
-            except FileNotFoundError:
-                return "Unknown"
+        """Shows the About dialog with application information."""
+        version = get_version()
 
         dlg = QtWidgets.QDialog()
         uic.loadUi(resource_path("about_dialog.ui"), dlg)
 
         # Set window title & fixed size for a polished look
-        dlg.setWindowTitle("About VIPrestore")
+        dlg.setWindowTitle(strings.DIALOG_TITLE_ABOUT)
         dlg.setFixedSize(400, 300)  # Adjust to fit contents
 
         # Load the application icon
@@ -1328,6 +1325,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tableWidgetServiceDetails.setRowCount(0)
 
 def main():
+    """Main application entry point."""
+    # Configure logging first
+    log_path = configure_logging()
+    logger = logging.getLogger(__name__)
+    
     logger.debug("Starting application and creating QApplication...")
     app = QtWidgets.QApplication(sys.argv)
     loop = QEventLoop(app)

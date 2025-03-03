@@ -1,5 +1,6 @@
 import requests
 import warnings
+import strings
 from requests import Session
 from typing import Optional, Callable, Dict
 from urllib.parse import urlparse
@@ -50,14 +51,8 @@ class VideoIPathClient:
                     "SSL certificate verification failed and no exception handler is available"
                 ) from ssl_err
                 
-            # Ask user if they want to proceed
-            message = (
-                f"SSL certificate verification failed for {domain}.\n\n"
-                "Continuing without verification could expose sensitive information "
-                "to attackers. Only proceed if you understand the risks.\n\n"
-                "Do you want to continue with an insecure connection?"
-            )
-            
+            message = strings.ERROR_SSL_CERT_CONTINUE.format(domain)
+                        
             # Get user decision via callback
             proceed = self.ssl_exception_callback(message)
             

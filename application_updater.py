@@ -3,6 +3,7 @@ import os
 import requests
 import subprocess
 import tempfile
+import strings
 from PyQt6 import QtWidgets, QtCore
 from typing import Optional
 
@@ -24,14 +25,11 @@ class ApplicationUpdater:
         self.thread = None
     
     def _get_current_version(self) -> str:
-        try:
-            with open(resource_path("version.txt"), "r", encoding="utf-8") as f:
-                version = f.read().strip()
-                logger.debug(f"Current version: {version}")
-                return version
-        except Exception as e:
-            logger.error(f"Error reading version.txt: {e}")
-            return "0.0.0"
+        """Get the current version from constants module."""
+        from constants import get_version
+        version = get_version()
+        logger.debug(f"Current version: {version}")
+        return version
     
     def parse_version(self, version_str: str) -> tuple:
         version_str = version_str.lstrip("v")
