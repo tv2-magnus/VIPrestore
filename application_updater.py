@@ -124,9 +124,15 @@ class ApplicationUpdater:
 
     def check_for_updates_async(self):
         """Check for updates asynchronously while handling splash screen properly."""
+        # Add this debug line
+        logger.debug("Starting update check process")
+        
         # Ensure main window shows after minimum splash time
         if self.splash and hasattr(self.splash, 'min_splash_time'):
+            logger.debug(f"Scheduling splash screen finish with time: {self.splash.min_splash_time}")
             schedule_ui_task(lambda: self.splash.finish(self.parent), self.splash.min_splash_time)
+        else:
+            logger.debug("No splash screen or min_splash_time not defined")
         
         # Run the check in a separate thread
         self.thread = QtCore.QThread()
@@ -139,6 +145,7 @@ class ApplicationUpdater:
         self.worker.error.connect(self.on_update_check_error)
         
         # Start the thread
+        logger.debug("Starting update check thread")
         self.thread.start()
     
     def on_update_check_complete(self, update_info):
@@ -323,8 +330,11 @@ class UpdateCheckWorker(QtCore.QObject):
     @QtCore.pyqtSlot()
     def process(self):
         """Check for updates and emit result."""
+        logger.debug("UpdateCheckWorker process started")
         try:
             update_info = self.updater.check_for_update()
+            logger.debug(f"Update check completed: {update_info is not None}")
             self.finished.emit(update_info)
         except Exception as e:
+            logger.error(f"Error in update check worker: {e}")
             self.error.emit(str(e))
