@@ -19,7 +19,7 @@ class ApplicationUpdater:
     def __init__(self, parent_window, splash_screen=None):
         self.parent = parent_window
         self.splash = splash_screen
-        self.repo_owner = "magnusoverli"
+        self.repo_owner = "tv2-magnus"
         self.repo_name = "VIPrestore"
         self.current_version = self._get_current_version()
         self.worker = None
