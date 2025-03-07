@@ -103,7 +103,7 @@ cert_password = getpass("Enter certificate password (leave empty to skip signing
 if cert_password.strip():
     if os.path.exists(exe_file):
         sign_tool = r"C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
-        cert_path = r"C:\Users\Magnus\cert.pfx"
+        cert_path = r"C:\Users\meo\cert.pfx"
         cmd = [
             sign_tool,
             "sign",
