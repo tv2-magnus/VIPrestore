@@ -24,6 +24,7 @@ import strings
 from logging_config import configure_logging
 from exceptions import exception_handler
 
+# This is test cmment for testing purposes
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
@@ -143,7 +144,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Clean up menu bar: create a new organized menu bar for improved UX
         menubar = self.menuBar()
         menubar.clear()
-
         # Create menus
         self.menuFile = menubar.addMenu("File")
         self.menuTools = menubar.addMenu("Tools")
