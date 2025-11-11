@@ -1273,6 +1273,15 @@ class MainWindow(QtWidgets.QMainWindow):
         merged = result["merged"]
         used_profile_ids = result["used_profile_ids"]
         
+        # Save currently selected service IDs before updating the model
+        selected_service_ids = set()
+        if self.tableViewServices.selectionModel():
+            selected_indexes = self.tableViewServices.selectionModel().selectedRows()
+            for index in selected_indexes:
+                service_id = self.filterProxy.index(index.row(), 0).data()
+                if service_id:
+                    selected_service_ids.add(service_id)
+        
         # Create a model with six columns in the specified order
         new_model = QtGui.QStandardItemModel(self)
         new_model.setHorizontalHeaderLabels(["Service ID", "Source", "Destination", "Profile", "Created By", "Start"])
@@ -1330,6 +1339,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.last_profile_ids = used_profile_ids
         
         self._setTableViewColumnWidths()
+        
+        # Restore the selection after the model is updated
+        if selected_service_ids:
+            self._restoreServiceSelection(selected_service_ids)
         
         # Update the total services count
         total_services = len([svc for svc in merged.values() if svc.get("type", "") != "group"])
@@ -1569,6 +1582,40 @@ class MainWindow(QtWidgets.QMainWindow):
     def clearServiceSelection(self):
         self.tableViewServices.clearSelection()
         self.tableWidgetServiceDetails.setRowCount(0)
+    
+    def _restoreServiceSelection(self, selected_service_ids: set):
+        """
+        Restore the selection of services in the table view based on their service IDs.
+        
+        Args:
+            selected_service_ids: Set of service IDs that should be selected
+        """
+        if not selected_service_ids or not self.tableViewServices.selectionModel():
+            return
+        
+        selection = QtCore.QItemSelection()
+        
+        # Iterate through all rows in the filter proxy to find matching service IDs
+        for row in range(self.filterProxy.rowCount()):
+            service_id = self.filterProxy.index(row, 0).data()
+            if service_id in selected_service_ids:
+                # Create a selection for the entire row
+                left_index = self.filterProxy.index(row, 0)
+                right_index = self.filterProxy.index(row, self.filterProxy.columnCount() - 1)
+                row_selection = QtCore.QItemSelection(left_index, right_index)
+                selection.merge(row_selection, QtCore.QItemSelectionModel.SelectionFlag.Select)
+        
+        # Apply the selection
+        if not selection.isEmpty():
+            self.tableViewServices.selectionModel().select(
+                selection,
+                QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect | QtCore.QItemSelectionModel.SelectionFlag.Rows
+            )
+            
+            # If only one service is selected, update the details panel
+            if len(selected_service_ids) == 1:
+                service_id = list(selected_service_ids)[0]
+                self.displayServiceDetails(service_id)
 
 def main():
     """Main application entry point."""
