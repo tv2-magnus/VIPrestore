@@ -3,6 +3,7 @@ import os
 import re
 import json
 import asyncio
+import threading
 from datetime import datetime
 from qasync import QEventLoop
 from PyQt6 import QtWidgets, uic, QtGui, QtCore
@@ -19,7 +20,7 @@ from pathlib import Path
 from splash_manager import SplashManager
 import styling
 from application_updater import ApplicationUpdater
-from constants import APP_NAME
+from constants import APP_NAME, get_version
 import strings
 from logging_config import configure_logging
 from exceptions import exception_handler
@@ -420,9 +421,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def ssl_exception_handler(self, message: str) -> bool:
         """Handle SSL certificate exceptions by prompting the user in a thread-safe way"""
-        # We need to use Qt's event loop to call back to the main thread
-        event_loop = QtCore.QEventLoop()
-        result = [False]  # Use a list to store the result from the inner function
+        import threading
+        result = [False]
+        done_event = threading.Event()
         
         # This will run on the main thread
         def show_dialog():
@@ -434,22 +435,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.StandardButton.No  # Default is No (safer)
             )
             result[0] = reply == QtWidgets.QMessageBox.StandardButton.Yes
-            event_loop.quit()
+            done_event.set()
         
-        # Schedule the dialog to be shown on the main thread
+        # Schedule the dialog to be shown on the main thread using BlockingQueuedConnection
         QtCore.QMetaObject.invokeMethod(self, "showSslWarningDialog", 
-                                    QtCore.Qt.ConnectionType.QueuedConnection,
+                                    QtCore.Qt.ConnectionType.BlockingQueuedConnection,
                                     QtCore.Q_ARG(str, message),
-                                    QtCore.Q_ARG(object, result),
-                                    QtCore.Q_ARG(object, event_loop))
+                                    QtCore.Q_ARG(object, result))
         
-        # Wait for the dialog to be handled
-        event_loop.exec()
         return result[0]
 
     # Add this slot method to MainWindow
-    @QtCore.pyqtSlot(str, object, object)
-    def showSslWarningDialog(self, message, result_list, event_loop):
+    @QtCore.pyqtSlot(str, object)
+    def showSslWarningDialog(self, message, result_list):
         """Slot to show SSL warning dialog on the main thread"""
         reply = QtWidgets.QMessageBox.question(
             self,
@@ -459,7 +457,6 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.StandardButton.No
         )
         result_list[0] = reply == QtWidgets.QMessageBox.StandardButton.Yes
-        event_loop.quit()
 
     def _format_timestamp(self, timestamp):
         """Converts a timestamp into a readable date format."""
@@ -604,11 +601,15 @@ class MainWindow(QtWidgets.QMainWindow):
         splitter.setSizes([400, 340])
 
     async def doLogin(self):
+        logger.debug("doLogin() called")
         while True:
+            logger.debug("Opening login dialog")
             dlg = LoginDialog()
             if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                logger.debug("Login dialog cancelled")
                 break
             server_url, username, password = dlg.getCredentials()
+            logger.debug(f"Login attempt for user: {username} to server: {server_url}")
             self.server_url = server_url  # Store for later reference
             self.client = VideoIPathClient(
                 server_url,
@@ -617,6 +618,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             loop = asyncio.get_running_loop()
             try:
+                logger.debug("Attempting to login via executor")
                 await loop.run_in_executor(self.executor, self.client.login, username, password)
                 self.service_manager.set_client(self.client)
                 session_info = await loop.run_in_executor(self.executor, lambda: self.client.get("/api/_session"))
@@ -629,12 +631,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 print(f"Logged-in User: {username_disp}")
                 print(f"Roles: {roles_str}")
             except VideoIPathClientError as e:
-                QtWidgets.QMessageBox.critical(self, "Login Failed", str(e))
+                logger.error(f"Login failed: {e}")
+                error_msg = str(e)
+                # Clean up the error message for better user experience
+                if "Login attempt failed:" in error_msg:
+                    error_msg = error_msg.replace("Login attempt failed: ", "")
+                QtWidgets.QMessageBox.warning(self, "Login Failed", error_msg)
                 self.client = None
                 self.updateConnectionStatus(False)
                 continue
             except Exception as e:
-                QtWidgets.QMessageBox.critical(self, "Login Failed", str(e))
+                logger.error(f"Unexpected login error: {e}", exc_info=True)
+                QtWidgets.QMessageBox.warning(
+                    self, 
+                    "Login Failed", 
+                    f"An unexpected error occurred:\n\n{str(e)}\n\nPlease check your connection and try again."
+                )
                 self.client = None
                 self.updateConnectionStatus(False)
                 continue

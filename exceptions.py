@@ -4,6 +4,7 @@ exceptions.py - Exception handling infrastructure for VIPrestore
 
 import sys
 import logging
+import requests.exceptions
 from PyQt6 import QtWidgets, QtCore
 import strings
 
@@ -76,12 +77,25 @@ class ExceptionHandler:
             error_msg: Error message to display
         """
         parent = self.main_window if self.main_window else None
-        QtWidgets.QMessageBox.critical(
-            parent,
-            strings.DIALOG_TITLE_ERROR,
-            f"An unexpected error occurred:\n\n{error_msg}\n\n"
-            f"This error has been logged. Please restart the application."
-        )
+        
+        # Check if this is a recoverable error
+        recoverable_keywords = ['timeout', 'connection', 'network', 'unreachable']
+        is_recoverable = any(keyword in error_msg.lower() for keyword in recoverable_keywords)
+        
+        if is_recoverable:
+            QtWidgets.QMessageBox.warning(
+                parent,
+                strings.DIALOG_TITLE_ERROR,
+                f"An error occurred:\n\n{error_msg}\n\n"
+                f"This error has been logged. You can try again."
+            )
+        else:
+            QtWidgets.QMessageBox.critical(
+                parent,
+                strings.DIALOG_TITLE_ERROR,
+                f"An unexpected error occurred:\n\n{error_msg}\n\n"
+                f"This error has been logged. Please restart the application if problems persist."
+            )
     
     def handle_api_error(self, error, context="operation", parent=None):
         """

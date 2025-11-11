@@ -10,7 +10,8 @@ class VideoIPathClientError(Exception):
 
 class VideoIPathClient:
     def __init__(self, base_url: str, verify_ssl: bool = True, 
-                 ssl_exception_callback: Optional[Callable[[str], bool]] = None) -> None:
+                 ssl_exception_callback: Optional[Callable[[str], bool]] = None,
+                 timeout: int = 5) -> None:
         self.base_url = base_url.rstrip("/")
         self.session: Session = requests.Session()
         self.session.verify = verify_ssl
@@ -21,6 +22,8 @@ class VideoIPathClient:
         self.ssl_exception_callback = ssl_exception_callback
         # Dictionary to store user decisions about SSL exceptions per domain
         self.ssl_exceptions: Dict[str, bool] = {}
+        # Default timeout for all requests
+        self.timeout = timeout
         
     def get_domain_from_url(self, url: str) -> str:
         """Extract domain from URL for tracking SSL exceptions"""
@@ -29,21 +32,46 @@ class VideoIPathClient:
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         domain = self.get_domain_from_url(url)
         
+        # Set default timeout if not provided
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = self.timeout
+        
+        # Disable automatic redirects to handle them manually
+        # This allows us to handle SSL errors on redirected HTTPS URLs
+        if 'allow_redirects' not in kwargs:
+            kwargs['allow_redirects'] = False
+        
         # Check if we already have a decision for this domain
         if domain in self.ssl_exceptions and not self.session.verify:
             # User previously accepted the risk for this domain
             try:
                 response = self.session.request(method, url, **kwargs)
+                # Handle redirects manually
+                if response.status_code in (301, 302, 303, 307, 308) and 'Location' in response.headers:
+                    redirect_url = response.headers['Location']
+                    return self._request(method, redirect_url, **kwargs)
                 response.raise_for_status()
                 return response
+            except requests.exceptions.Timeout:
+                raise VideoIPathClientError(f"Connection to {domain} timed out. Please check the server address and network connection.")
+            except requests.exceptions.ConnectionError as e:
+                raise VideoIPathClientError(f"Could not connect to {domain}. Please verify the server is running and accessible.")
             except requests.exceptions.RequestException as e:
                 raise VideoIPathClientError(f"Request failed: {e}") from e
         
         # First try with SSL verification per current setting
         try:
             response = self.session.request(method, url, **kwargs)
+            
+            # Handle redirects manually
+            if response.status_code in (301, 302, 303, 307, 308) and 'Location' in response.headers:
+                redirect_url = response.headers['Location']
+                return self._request(method, redirect_url, **kwargs)
+            
             response.raise_for_status()
             return response
+        except requests.exceptions.Timeout:
+            raise VideoIPathClientError(f"Connection to {domain} timed out. Please check the server address and network connection.")
         except requests.exceptions.SSLError as ssl_err:
             # Only proceed if we have a callback to confirm with user
             if self.ssl_exception_callback is None:
@@ -71,8 +99,16 @@ class VideoIPathClient:
                 
                 try:
                     response = self.session.request(method, url, **kwargs)
+                    # Handle redirects manually
+                    if response.status_code in (301, 302, 303, 307, 308) and 'Location' in response.headers:
+                        redirect_url = response.headers['Location']
+                        return self._request(method, redirect_url, **kwargs)
                     response.raise_for_status()
                     return response
+                except requests.exceptions.Timeout:
+                    raise VideoIPathClientError(f"Connection to {domain} timed out. Please check the server address and network connection.")
+                except requests.exceptions.ConnectionError:
+                    raise VideoIPathClientError(f"Could not connect to {domain}. Please verify the server is running and accessible.")
                 except requests.exceptions.RequestException as e:
                     raise VideoIPathClientError(f"Request failed after SSL exception: {e}") from e
             else:
@@ -81,6 +117,13 @@ class VideoIPathClient:
                     f"SSL certificate verification failed for {domain}. "
                     "Connection aborted per user request."
                 ) from ssl_err
+        except requests.exceptions.ConnectionError:
+            raise VideoIPathClientError(f"Could not connect to {domain}. Please verify the server is running and accessible.")
+        except requests.exceptions.HTTPError as http_err:
+            status_code = http_err.response.status_code if http_err.response else "Unknown"
+            raise VideoIPathClientError(f"HTTP error {status_code}: {http_err}")
+        except requests.exceptions.RequestException as e:
+            raise VideoIPathClientError(f"Request failed: {e}") from e
 
     def login(self, username: str, password: str) -> None:
         """
@@ -103,9 +146,19 @@ class VideoIPathClient:
         except Exception as err:
             raise VideoIPathClientError(f"Invalid JSON response during login: {err}")
 
+        # Check for successful login
         if not result.get("ok"):
-            details = result.get("error") or result.get("msg") or str(result)
-            raise VideoIPathClientError(f"Login failed: {details}")
+            # Extract error details in order of preference
+            error_msg = result.get("error") or result.get("msg") or result.get("reason")
+            if error_msg:
+                raise VideoIPathClientError(f"Login failed: {error_msg}")
+            else:
+                # Check if we got an empty userCtx (common for invalid credentials)
+                user_ctx = result.get("userCtx", {})
+                if not user_ctx.get("name"):
+                    raise VideoIPathClientError("Login failed: Invalid username or password")
+                else:
+                    raise VideoIPathClientError("Login failed: Authentication was not successful")
 
         # Store session cookies and set the X-XSRF-TOKEN header for subsequent requests.
         token = self.session.cookies.get("XSRF-TOKEN")
