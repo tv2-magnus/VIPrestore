@@ -25,3 +25,12 @@ def get_version():
 # Application constants
 APP_VERSION = get_version()
 APP_ID = f"tv2.{APP_NAME.lower()}.client.{APP_VERSION}"
+
+# Auto-refresh configuration (in milliseconds)
+# Polling intervals for subscription-based updates
+POLL_INTERVAL_ACTIVE = 5000  # 5 seconds when window is active (faster for real-time feel)
+POLL_INTERVAL_BACKGROUND = 30000  # 30 seconds when window is backgrounded
+POLL_INTERVAL_BURST = 3000  # 3 seconds during burst mode (after user operations)
+POLL_BURST_DURATION = 60000  # 1 minute of burst mode after user operations
+POLL_IDLE_THRESHOLD = 20  # Number of unchanged polls before increasing interval
+POLL_INTERVAL_IDLE = 15000  # 15 seconds when no changes detected (still responsive)

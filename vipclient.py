@@ -24,6 +24,8 @@ class VideoIPathClient:
         self.ssl_exceptions: Dict[str, bool] = {}
         # Default timeout for all requests
         self.timeout = timeout
+        # Subscription management
+        self.subscription_id: Optional[str] = None
         
     def get_domain_from_url(self, url: str) -> str:
         """Extract domain from URL for tracking SSL exceptions"""
@@ -184,6 +186,10 @@ class VideoIPathClient:
         return result.get("ok", False)
 
     def logout(self) -> None:
+        # Clean up subscription before logout
+        if self.subscription_id:
+            self.delete_subscription()
+        
         url = f"{self.base_url}/api/_session"
         self._request("DELETE", url)
         self.session.cookies.clear()
@@ -353,3 +359,76 @@ class VideoIPathClient:
         except Exception:
             pass
         return endpoint_map
+    
+    def create_subscription(self, path: str) -> Optional[str]:
+        """
+        Create a subscription for the specified path.
+        Returns the subscription ID on success, None on failure.
+        
+        Args:
+            path: The REST path to subscribe to (e.g., "/status/pathman/currentModernServices/**")
+            
+        Returns:
+            Subscription ID string or None
+        """
+        try:
+            url = f"{self.base_url}/rest/v1/sessions/me/subsc"
+            payload = {"path": path}
+            resp = self._request("POST", url, json=payload)
+            result = resp.json()
+            
+            # Extract subscription ID from response
+            subscription_id = result.get("_id")
+            if subscription_id:
+                self.subscription_id = subscription_id
+                return subscription_id
+            else:
+                raise VideoIPathClientError("No subscription ID in response")
+                
+        except Exception as e:
+            raise VideoIPathClientError(f"Failed to create subscription: {e}") from e
+    
+    def acknowledge_subscription(self, subscription_id: Optional[str] = None) -> dict:
+        """
+        Acknowledge a subscription and retrieve any changes since last acknowledgment.
+        
+        Args:
+            subscription_id: The subscription ID (uses stored ID if not provided)
+            
+        Returns:
+            Dictionary containing the subscription data with changes
+        """
+        if subscription_id is None:
+            subscription_id = self.subscription_id
+            
+        if not subscription_id:
+            raise VideoIPathClientError("No subscription ID available")
+        
+        try:
+            url = f"{self.base_url}/rest/v1/sessions/me/subsc/{subscription_id}/ack"
+            resp = self._request("POST", url, json={})
+            return resp.json()
+        except Exception as e:
+            raise VideoIPathClientError(f"Failed to acknowledge subscription: {e}") from e
+    
+    def delete_subscription(self, subscription_id: Optional[str] = None) -> None:
+        """
+        Delete a subscription.
+        
+        Args:
+            subscription_id: The subscription ID (uses stored ID if not provided)
+        """
+        if subscription_id is None:
+            subscription_id = self.subscription_id
+            
+        if not subscription_id:
+            return  # Nothing to delete
+        
+        try:
+            url = f"{self.base_url}/rest/v1/sessions/me/subsc/{subscription_id}"
+            self._request("DELETE", url)
+            if subscription_id == self.subscription_id:
+                self.subscription_id = None
+        except Exception:
+            # Ignore errors during subscription cleanup
+            pass

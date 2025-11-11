@@ -20,7 +20,12 @@ from pathlib import Path
 from splash_manager import SplashManager
 import styling
 from application_updater import ApplicationUpdater
-from constants import APP_NAME, get_version
+from constants import (
+    APP_NAME, get_version,
+    POLL_INTERVAL_ACTIVE, POLL_INTERVAL_BACKGROUND,
+    POLL_INTERVAL_BURST, POLL_BURST_DURATION,
+    POLL_IDLE_THRESHOLD, POLL_INTERVAL_IDLE
+)
 import strings
 from logging_config import configure_logging
 from exceptions import exception_handler
@@ -354,6 +359,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sessionTimer.setInterval(30000)
         self.sessionTimer.timeout.connect(self.checkSession)
         self.sessionTimer.start()
+        
+        # Setup Auto-Refresh Timer for subscription polling
+        self.autoRefreshTimer = QtCore.QTimer(self)
+        self.autoRefreshTimer.timeout.connect(self.onAutoRefreshTick)
+        self.current_poll_interval = POLL_INTERVAL_ACTIVE
+        self.burst_mode_end_time = None
+        self.is_window_active = True
+        self.is_polling = False  # Prevent overlapping polls
 
         # --- Context Menu Setup ---
         self.tableViewServices.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
@@ -611,6 +624,13 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         When the main window is about to close, clean up all resources.
         """
+        # Stop the auto-refresh timer
+        self.stopAutoRefresh()
+        
+        # Clean up subscription
+        if hasattr(self, 'service_manager'):
+            self.service_manager.delete_subscription()
+        
         # Stop the session timer
         if self.sessionTimer.isActive():
             self.sessionTimer.stop()
@@ -764,12 +784,27 @@ class MainWindow(QtWidgets.QMainWindow):
             ssl_verified = self.client.session.verify if server_url.startswith("https://") else False
             self.updateConnectionStatus(True, ssl_verified)
             await self.refreshServicesAsync()
+            
+            # Create subscription and start auto-refresh
+            try:
+                await self.service_manager.create_subscription()
+                self.startAutoRefresh()
+                logger.info("Subscription created and auto-refresh started")
+            except Exception as e:
+                logger.warning(f"Failed to create subscription: {e}. Auto-refresh disabled.")
+            
             break
 
     def updateUserStatus(self, text):
         self.labelUserInfo.setText(text)
 
     def doLogout(self):
+        # Stop auto-refresh
+        self.stopAutoRefresh()
+        
+        # Clean up subscription
+        self.service_manager.delete_subscription()
+        
         if self.client:
             try:
                 self.client.logout()
@@ -1060,6 +1095,111 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusMsgLabel.setText("Services refreshed")
             # Clear status message quickly
             schedule_ui_task(lambda: self.statusMsgLabel.setText(""), 1500)
+    
+    def onAutoRefreshTick(self):
+        """Synchronous callback for QTimer that triggers async polling."""
+        # Prevent overlapping polls
+        if self.is_polling:
+            logger.debug("Skipping poll - previous poll still in progress")
+            return
+        
+        # Create and track the async task
+        asyncio.create_task(self.pollSubscriptionUpdates())
+    
+    async def pollSubscriptionUpdates(self):
+        """Poll subscription for changes and update UI incrementally."""
+        if not self.client:
+            self.stopAutoRefresh()
+            return
+        
+        # Mark as polling
+        self.is_polling = True
+        logger.debug(f"Polling subscription (interval: {self.current_poll_interval}ms)")
+        
+        try:
+            # Check if we need to adjust polling interval
+            self._adjustPollInterval()
+            
+            # Poll for subscription changes
+            changes = await self.service_manager.poll_subscription_changes()
+            
+            if not changes:
+                return
+            
+            if not changes["has_changes"]:
+                # No changes detected
+                return
+            
+            if changes["needs_full_refresh"]:
+                # Full refresh needed
+                logger.info("Subscription requested full refresh")
+                await self.refreshServicesAsync()
+                self.enterBurstMode()
+                return
+            
+            # Process incremental changes
+            added = changes["added"]
+            updated = changes["updated"]
+            deleted = changes["deleted"]
+            
+            if added or updated or deleted:
+                logger.info(f"Incremental update: +{len(added)} ~{len(updated)} -{len(deleted)}")
+                # For now, do a full refresh to update the UI
+                # In the future, we could implement true incremental updates
+                await self.refreshServicesAsync()
+                self.enterBurstMode()
+                
+        except ServiceManagerError as e:
+            logger.error(f"Subscription poll error: {e}")
+            # Don't show error to user for background polling failures
+            # Just stop auto-refresh
+            self.stopAutoRefresh()
+        except Exception as e:
+            logger.error(f"Unexpected subscription poll error: {e}", exc_info=True)
+        finally:
+            self.is_polling = False
+    
+    def _adjustPollInterval(self):
+        """Adjust polling interval based on current state."""
+        import time
+        current_time = time.time() * 1000  # Convert to milliseconds
+        
+        # Check if we're in burst mode
+        if self.burst_mode_end_time and current_time < self.burst_mode_end_time:
+            new_interval = POLL_INTERVAL_BURST
+        elif not self.is_window_active:
+            new_interval = POLL_INTERVAL_BACKGROUND
+        elif self.service_manager.unchanged_poll_count >= POLL_IDLE_THRESHOLD:
+            new_interval = POLL_INTERVAL_IDLE
+        else:
+            new_interval = POLL_INTERVAL_ACTIVE
+        
+        if new_interval != self.current_poll_interval:
+            self.current_poll_interval = new_interval
+            self.autoRefreshTimer.setInterval(new_interval)
+            logger.debug(f"Adjusted poll interval to {new_interval}ms")
+    
+    def enterBurstMode(self):
+        """Enter burst mode for rapid polling after user operations."""
+        import time
+        self.burst_mode_end_time = (time.time() * 1000) + POLL_BURST_DURATION
+        logger.debug("Entered burst polling mode")
+    
+    def startAutoRefresh(self):
+        """Start automatic refresh via subscription polling."""
+        if not self.client or not self.autoRefreshTimer:
+            return
+        
+        if not self.autoRefreshTimer.isActive():
+            self.autoRefreshTimer.setInterval(self.current_poll_interval)
+            self.autoRefreshTimer.start()
+            logger.info("Auto-refresh started")
+    
+    def stopAutoRefresh(self):
+        """Stop automatic refresh."""
+        if self.autoRefreshTimer and self.autoRefreshTimer.isActive():
+            self.autoRefreshTimer.stop()
+            logger.info("Auto-refresh stopped")
 
     async def _fetchServicesData(self) -> dict:
         future_normal = self._run_api_call(self.client.retrieve_services)

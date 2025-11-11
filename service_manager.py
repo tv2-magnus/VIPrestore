@@ -31,6 +31,8 @@ class ServiceManager:
         self.profile_mapping = {}
         self.endpoint_map = {}
         self.child_to_group = {}
+        self.subscription_id: Optional[str] = None
+        self.unchanged_poll_count = 0  # Track polls with no changes
     
     def set_client(self, client: VideoIPathClient) -> None:
         """
@@ -563,3 +565,199 @@ class ServiceManager:
             modern_services_to_save[service_id] = modern_entry
         
         return modern_services_to_save
+    
+    async def create_subscription(self) -> Optional[str]:
+        """
+        Create a subscription for modern services updates.
+        
+        Returns:
+            Subscription ID on success, None on failure
+            
+        Raises:
+            ServiceManagerError: If client is not set or subscription creation fails
+        """
+        if not self.client:
+            raise ServiceManagerError("Client not set")
+        
+        try:
+            loop = asyncio.get_running_loop()
+            subscription_id = await loop.run_in_executor(
+                self.executor,
+                self.client.create_subscription,
+                "/status/pathman/currentModernServices/**"
+            )
+            self.subscription_id = subscription_id
+            logger.info(f"Created subscription with ID: {subscription_id}")
+            return subscription_id
+        except Exception as e:
+            logger.error(f"Failed to create subscription: {e}")
+            raise ServiceManagerError(f"Failed to create subscription: {e}")
+    
+    async def poll_subscription_changes(self) -> Optional[Dict[str, Any]]:
+        """
+        Poll the subscription for changes and return processed update information.
+        
+        Returns:
+            Dictionary with update information or None if no changes:
+            {
+                "has_changes": bool,
+                "added": List[str],  # Service IDs that were added
+                "updated": List[str],  # Service IDs that were updated
+                "deleted": List[str],  # Service IDs that were deleted
+                "needs_full_refresh": bool,  # If true, do a full refresh
+                "data": dict  # Raw subscription data
+            }
+            
+        Raises:
+            ServiceManagerError: If subscription polling fails
+        """
+        if not self.client:
+            raise ServiceManagerError("Client not set")
+        
+        if not self.subscription_id:
+            logger.warning("No subscription ID, creating new subscription")
+            await self.create_subscription()
+            # First subscription returns full data, treat as full refresh
+            return {
+                "has_changes": True,
+                "added": [],
+                "updated": [],
+                "deleted": [],
+                "needs_full_refresh": True,
+                "data": None
+            }
+        
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                self.executor,
+                self.client.acknowledge_subscription,
+                self.subscription_id
+            )
+            
+            # Check if there are changes
+            data_node = result.get("data")
+            
+            if data_node is None:
+                # No changes since last poll
+                self.unchanged_poll_count += 1
+                logger.debug(f"No changes detected (count: {self.unchanged_poll_count})")
+                return {
+                    "has_changes": False,
+                    "added": [],
+                    "updated": [],
+                    "deleted": [],
+                    "needs_full_refresh": False,
+                    "data": None
+                }
+            
+            # Reset unchanged counter when changes are detected
+            self.unchanged_poll_count = 0
+            
+            # Parse the differential update
+            added, updated, deleted, needs_full_refresh = self._parse_subscription_update(data_node)
+            
+            logger.info(f"Subscription changes: added={len(added)}, updated={len(updated)}, deleted={len(deleted)}, full_refresh={needs_full_refresh}")
+            
+            return {
+                "has_changes": True,
+                "added": added,
+                "updated": updated,
+                "deleted": deleted,
+                "needs_full_refresh": needs_full_refresh,
+                "data": data_node
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to poll subscription: {e}")
+            # Subscription may have expired, try to recreate
+            self.subscription_id = None
+            raise ServiceManagerError(f"Failed to poll subscription: {e}")
+    
+    def _parse_subscription_update(self, data_node: dict) -> Tuple[List[str], List[str], List[str], bool]:
+        """
+        Parse subscription update data to identify changes.
+        
+        Args:
+            data_node: The data node from subscription acknowledgment
+            
+        Returns:
+            Tuple of (added_ids, updated_ids, deleted_ids, needs_full_refresh)
+        """
+        added = []
+        updated = []
+        deleted = []
+        needs_full_refresh = False
+        
+        try:
+            # First check if this is a dict (should be for subscription data)
+            if not isinstance(data_node, dict):
+                logger.error(f"Data node is not a dict, type: {type(data_node)}")
+                needs_full_refresh = True
+                return added, updated, deleted, needs_full_refresh
+            
+            # Navigate to the currentModernServices section
+            # The structure may vary: could be data.status.pathman.currentModernServices
+            # or directly in data_node
+            status = data_node.get("status", {})
+            pathman = status.get("pathman", {}) if isinstance(status, dict) else {}
+            services = pathman.get("currentModernServices", {}) if isinstance(pathman, dict) else {}
+            
+            # If services is empty, it might be at a different level - check data_node directly
+            if not services and "currentModernServices" in data_node:
+                services = data_node.get("currentModernServices", {})
+            
+            # Check if services is actually a dict
+            if not isinstance(services, dict):
+                logger.debug(f"Services is not a dict: {type(services)}, forcing full refresh")
+                needs_full_refresh = True
+                return added, updated, deleted, needs_full_refresh
+            
+            # Check for full refresh event at any level
+            if data_node.get("_e") == "r" or status.get("_e") == "r" or pathman.get("_e") == "r":
+                needs_full_refresh = True
+                return added, updated, deleted, needs_full_refresh
+            
+            # If services dict is empty, no changes
+            if not services:
+                logger.debug("No services in update")
+                return added, updated, deleted, needs_full_refresh
+            
+            # Process each service
+            for service_id, service_data in services.items():
+                if not isinstance(service_data, dict):
+                    logger.warning(f"Service data for {service_id} is not a dict: {type(service_data)}")
+                    continue
+                    
+                event_type = service_data.get("_e", "u")  # Default to update if no _e attribute
+                
+                if event_type == "d":
+                    # Service deleted
+                    deleted.append(service_id)
+                elif event_type == "r":
+                    # Full refresh for this service (treat as update)
+                    updated.append(service_id)
+                elif event_type == "u":
+                    # Service updated or added
+                    if service_id in self.current_services:
+                        updated.append(service_id)
+                    else:
+                        added.append(service_id)
+                # event_type "e" means empty/ignore
+                
+        except Exception as e:
+            logger.error(f"Error parsing subscription update: {e}", exc_info=True)
+            needs_full_refresh = True
+        
+        return added, updated, deleted, needs_full_refresh
+    
+    def delete_subscription(self) -> None:
+        """Clean up subscription resources."""
+        if self.client and self.subscription_id:
+            try:
+                self.client.delete_subscription(self.subscription_id)
+                logger.info(f"Deleted subscription {self.subscription_id}")
+            except Exception as e:
+                logger.error(f"Error deleting subscription: {e}")
+            finally:
+                self.subscription_id = None
