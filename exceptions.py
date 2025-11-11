@@ -55,8 +55,17 @@ class ExceptionHandler:
         # Format error message for user
         error_msg = f"{exc_type.__name__}: {exc_value}"
         
-        # Show dialog on the main thread
-        if self.app and self.app.thread() == QtCore.QThread.currentThread():
+        # Check if we're on the main GUI thread
+        app_instance = QtWidgets.QApplication.instance()
+        if app_instance is None:
+            # No QApplication exists - just log
+            logger.critical("Cannot show dialog - QApplication not available")
+            return
+        
+        main_thread = app_instance.thread()
+        current_thread = QtCore.QThread.currentThread()
+        
+        if current_thread == main_thread:
             # We're on the main thread, show dialog directly
             self.show_exception_dialog(error_msg)
         else:

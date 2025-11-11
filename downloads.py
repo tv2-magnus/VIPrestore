@@ -101,11 +101,8 @@ class DownloadWorker(QtCore.QObject):
                 for chunk in response.iter_content(chunk_size=chunk_size):
                     if self._cancelled:
                         logger.debug("Download cancelled")
-                        f.close()
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
-                        self.cancelled.emit()
-                        return
+                        # Don't manually close - let context manager handle it
+                        break
                     
                     if chunk:
                         f.write(chunk)
@@ -121,6 +118,17 @@ class DownloadWorker(QtCore.QObject):
                                     f"Downloading... {self.human_readable_size(downloaded_size)} of "
                                     f"{self.human_readable_size(total_size)}"
                                 )
+            
+            # After context manager exits, file is properly closed
+            if self._cancelled:
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        logger.debug(f"Removed incomplete download: {file_path}")
+                except OSError as e:
+                    logger.warning(f"Failed to remove incomplete download: {e}")
+                self.cancelled.emit()
+                return
             
             logger.debug(f"Download completed: {file_path}")
             self.progressChanged.emit(100)

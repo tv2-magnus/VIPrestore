@@ -59,18 +59,29 @@ class ServicesFilterProxy(QtCore.QSortFilterProxyModel):
         start_text  = (model.data(idx_start)  or "")
         profile_txt = (model.data(idx_prof)   or "")
     
+        # Text filters
         if not self.evaluate_filter(source_text, self.source_filter):
             return False
         if not self.evaluate_filter(dest_text, self.destination_filter):
             return False
     
-        # Time range filter
-        if start_text:
+        # Time range filter with validation
+        if start_text and (self.start_range[0] or self.start_range[1]):
             dt_val = QtCore.QDateTime.fromString(start_text, "dd-MM-yyyy - HH:mm:ss")
-            if self.start_range[0] and dt_val < self.start_range[0]:
+            
+            # Validate parsed datetime
+            if not dt_val.isValid():
+                # Invalid datetime - exclude from filter
                 return False
-            if self.start_range[1] and dt_val > self.start_range[1]:
-                return False
+            
+            # Apply time range filters
+            if self.start_range[0] and self.start_range[0].isValid():
+                if dt_val < self.start_range[0]:
+                    return False
+            
+            if self.start_range[1] and self.start_range[1].isValid():
+                if dt_val > self.start_range[1]:
+                    return False
     
         # Profile filter
         if self.active_profiles and profile_txt not in self.active_profiles:

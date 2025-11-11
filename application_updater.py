@@ -35,16 +35,52 @@ class ApplicationUpdater:
         return version
     
     def parse_version(self, version_str: str) -> tuple:
-        version_str = version_str.lstrip("v")
-        parts = version_str.split("-")
-        main = parts[0]
-        build = parts[1] if len(parts) > 1 else None
+        """
+        Parse a version string into a tuple of integers for comparison.
         
-        main_nums = [int(x) for x in main.split(".")]
-        if build and build.isdigit():
-            main_nums.append(int(build))
+        Args:
+            version_str: Version string (e.g., "v1.2.3", "1.2.3-4")
             
-        return tuple(main_nums)
+        Returns:
+            tuple: Version components as integers (e.g., (1, 2, 3))
+            Returns (0,) for invalid versions to ensure they sort lowest
+            
+        Examples:
+            >>> parse_version("v1.2.3")
+            (1, 2, 3)
+            >>> parse_version("1.2.3-4")
+            (1, 2, 3, 4)
+            >>> parse_version("invalid")
+            (0,)
+        """
+        try:
+            version_str = version_str.lstrip("v").strip()
+            if not version_str:
+                logger.warning("Empty version string provided")
+                return (0,)
+            
+            parts = version_str.split("-")
+            main = parts[0]
+            build = parts[1] if len(parts) > 1 else None
+            
+            # Parse main version components
+            main_nums = []
+            for component in main.split("."):
+                component = component.strip()
+                if not component.isdigit():
+                    logger.warning(f"Non-numeric version component: {component}")
+                    return (0,)
+                main_nums.append(int(component))
+            
+            # Parse build number if present
+            if build and build.strip().isdigit():
+                main_nums.append(int(build.strip()))
+            
+            return tuple(main_nums)
+            
+        except (ValueError, AttributeError) as e:
+            logger.error(f"Failed to parse version string '{version_str}': {e}")
+            return (0,)  # Return lowest version so comparisons don't crash
 
     def check_for_update(self) -> Optional[dict]:
         url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/releases"
@@ -124,15 +160,14 @@ class ApplicationUpdater:
 
     def check_for_updates_async(self):
         """Check for updates asynchronously while handling splash screen properly."""
-        # Add this debug line
         logger.debug("Starting update check process")
         
         # Ensure main window shows after minimum splash time
-        if self.splash and hasattr(self.splash, 'min_splash_time'):
+        if self.splash:
             logger.debug(f"Scheduling splash screen finish with time: {self.splash.min_splash_time}")
             schedule_ui_task(lambda: self.splash.finish(self.parent), self.splash.min_splash_time)
         else:
-            logger.debug("No splash screen or min_splash_time not defined")
+            logger.debug("No splash screen available")
         
         # Run the check in a separate thread
         self.thread = QtCore.QThread()

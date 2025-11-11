@@ -25,40 +25,111 @@ import strings
 from logging_config import configure_logging
 from exceptions import exception_handler
 
-# This is test cmment for testing purposes
+# Logging will be configured in main() function via configure_logging()
+# Do not configure logging at module level to avoid conflicts
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
-# Cross-platform log directory determination
-def get_app_log_dir() -> Path:
+
+# Async dialog helper functions for non-blocking message boxes
+async def show_question_async(parent, title: str, text: str, 
+                               buttons=None,
+                               default_button=None):
     """
-    Returns a Path object for a user-writable application log directory.
-    On Windows, uses LOCALAPPDATA; on macOS, uses Application Support; on Linux, uses XDG_CONFIG_HOME.
-    The directory is created if it doesn't exist.
-    """
-    if sys.platform.startswith("win"):
-        log_dir = Path(os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / APP_NAME
-    elif sys.platform == "darwin":
-        log_dir = Path.home() / "Library" / "Application Support" / APP_NAME
-    else:
-        log_dir = Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config")) / APP_NAME
+    Show a question dialog without blocking the async event loop.
     
-    log_dir.mkdir(parents=True, exist_ok=True)
-    return log_dir
+    Args:
+        parent: Parent widget
+        title: Dialog title
+        text: Dialog text
+        buttons: StandardButtons (default: Yes | No)
+        default_button: Default button (default: No)
+    
+    Returns:
+        The button that was clicked (StandardButton enum value)
+    """
+    if buttons is None:
+        buttons = (QtWidgets.QMessageBox.StandardButton.Yes | 
+                  QtWidgets.QMessageBox.StandardButton.No)
+    if default_button is None:
+        default_button = QtWidgets.QMessageBox.StandardButton.No
+    
+    msg_box = QtWidgets.QMessageBox(parent)
+    msg_box.setWindowTitle(title)
+    msg_box.setText(text)
+    msg_box.setStandardButtons(buttons)
+    msg_box.setDefaultButton(default_button)
+    msg_box.setModal(True)
+    
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    
+    def on_finished(result):
+        if not future.done():
+            future.set_result(result)
+    
+    msg_box.finished.connect(on_finished)
+    msg_box.open()
+    
+    return await future
 
-# Use the cross-platform function for log directory
-log_dir = get_app_log_dir()
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-log_filename = f"viprestore_{timestamp}.log"
 
-# Configure logging
-logging.basicConfig(
-    filename=str(log_dir / log_filename),
-    filemode='w',  # 'w' instead of 'a' since each file is new
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logging.debug("Application started")
+async def show_information_async(parent, title: str, text: str):
+    """
+    Show an information dialog without blocking the async event loop.
+    
+    Args:
+        parent: Parent widget
+        title: Dialog title
+        text: Dialog text
+    """
+    msg_box = QtWidgets.QMessageBox(parent)
+    msg_box.setWindowTitle(title)
+    msg_box.setText(text)
+    msg_box.setIcon(QtWidgets.QMessageBox.Icon.Information)
+    msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+    msg_box.setModal(True)
+    
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    
+    def on_finished():
+        if not future.done():
+            future.set_result(None)
+    
+    msg_box.finished.connect(on_finished)
+    msg_box.open()
+    
+    await future
+
+
+async def show_critical_async(parent, title: str, text: str):
+    """
+    Show a critical error dialog without blocking the async event loop.
+    
+    Args:
+        parent: Parent widget
+        title: Dialog title
+        text: Dialog text
+    """
+    msg_box = QtWidgets.QMessageBox(parent)
+    msg_box.setWindowTitle(title)
+    msg_box.setText(text)
+    msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
+    msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+    msg_box.setModal(True)
+    
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    
+    def on_finished():
+        if not future.done():
+            future.set_result(None)
+    
+    msg_box.finished.connect(on_finished)
+    msg_box.open()
+    
+    await future
+
 
 def get_user_config_dir() -> Path:
     """
@@ -141,6 +212,7 @@ class MainWindow(QtWidgets.QMainWindow):
         
         # Initialize current services storage
         self.currentServices = {}
+        self.last_profile_ids = set()  # Track profile IDs to avoid unnecessary rebuilds
 
         # Clean up menu bar: create a new organized menu bar for improved UX
         menubar = self.menuBar()
@@ -187,12 +259,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.menuFile.addAction(self.actionLogin)
         self.menuFile.addAction(self.actionLogout)
         self.menuFile.addSeparator()
-        self.menuFile.addAction(self.actionLoadServices)
         self.menuFile.addAction(self.actionSaveSelectedServices)
         self.menuFile.addSeparator()
         self.menuFile.addAction(self.actionExit)
 
         # Add actions to Tools menu (with a separator between groups)
+        self.menuTools.addAction(self.actionLoadServices)
+        self.menuTools.addSeparator()
         self.menuTools.addAction(self.actionRefresh)
         self.menuTools.addSeparator()
         self.menuTools.addAction(self.actionEditSystems)
@@ -226,6 +299,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # Executor for blocking calls
         self.executor = ThreadPoolExecutor()
 
+        # Initialize to None - will be created by initialize_table_models
+        self.serviceModel = None
+        self.filterProxy = None
+
         # Basic table configuration - don't create models yet
         self.tableViewServices.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tableViewServices.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -233,13 +310,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tableViewServices.setAlternatingRowColors(True)
         self.tableViewServices.setSortingEnabled(True)
         self.tableViewServices.clicked.connect(self.onServiceClicked)
-
-        # Setup Model and Filter for Services
-        self.serviceModel = QtGui.QStandardItemModel(self)
-        self.filterProxy = ServicesFilterProxy(self)
-        self.filterProxy.setSourceModel(self.serviceModel)
-        self.tableViewServices.setModel(self.filterProxy)
-        self.tableViewServices.selectionModel().selectionChanged.connect(self.onServiceSelectionChanged)
 
         # Setup Filter Widgets
         self.lineEditSourceFilter.textChanged.connect(self.onSourceFilterChanged)
@@ -490,15 +560,15 @@ class MainWindow(QtWidgets.QMainWindow):
     async def cancelSelectedServices(self):
         indexes = self.tableViewServices.selectionModel().selectedRows()
         if not indexes:
-            QtWidgets.QMessageBox.information(
+            await show_information_async(
                 self,
                 "No Selection",
                 "Please select at least one service to cancel."
             )
             return
 
-        # Confirm with the user
-        confirm = QtWidgets.QMessageBox.question(
+        # Confirm with the user (non-blocking)
+        confirm = await show_question_async(
             self,
             "Confirm Cancellation",
             "Are you sure you want to cancel the selected service(s)?",
@@ -526,72 +596,111 @@ class MainWindow(QtWidgets.QMainWindow):
                 for service_id, error in failed_services:
                     msg += f"- {service_id}: {error}\n"
             
-            QtWidgets.QMessageBox.information(self, "Cancellation Results", msg)
-        except ServiceManagerError as e:
-            QtWidgets.QMessageBox.critical(self, "Cancel Error", str(e))
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Unexpected Error", f"An unexpected error occurred: {str(e)}")
-        finally:
-            # Always refresh, even if there's an error
+            # Show result dialog immediately (non-blocking)
+            await show_information_async(self, "Cancellation Results", msg)
+            
+            # Then refresh services (updates UI after user sees result)
             await self.refreshServicesAsync()
+            
+        except ServiceManagerError as e:
+            await show_critical_async(self, "Cancel Error", str(e))
+        except Exception as e:
+            await show_critical_async(self, "Unexpected Error", f"An unexpected error occurred: {str(e)}")
 
     def closeEvent(self, event: QtGui.QCloseEvent):
         """
-        When the main window is about to close, stop the sessionTimer
-        so it doesn't keep calling checkSession() on a destroyed window.
+        When the main window is about to close, clean up all resources.
         """
+        # Stop the session timer
         if self.sessionTimer.isActive():
             self.sessionTimer.stop()
+        
+        # Shutdown executor gracefully
+        if hasattr(self, 'executor'):
+            logger.debug("Shutting down thread pool executor...")
+            self.executor.shutdown(wait=False)
+            # Note: wait=False allows background tasks to complete naturally
+        
+        # Clean up service manager executor too
+        if hasattr(self, 'service_manager') and hasattr(self.service_manager, 'executor'):
+            logger.debug("Shutting down service manager executor...")
+            self.service_manager.executor.shutdown(wait=False)
+        
         super().closeEvent(event)
 
-    def update_table_fonts(self):
-        """Update table fonts explicitly"""
-        if self.bold_font_family:
-            print(f"Updating table fonts to: {self.bold_font_family}")  # Debug print
-            bold_font = QtGui.QFont(self.bold_font_family, 10, QtGui.QFont.Weight.Bold)
-            self.tableViewServices.setFont(bold_font)
-            self.tableWidgetServiceDetails.setFont(bold_font)
+
 
     def initialize_table_models(self):
         """Lazily initialize table models and related data structures.
         Called after the window is visible to improve startup time."""
         
-        # Configure Service View Table - deferred initialization
+        # Create models only once (deferred initialization)
         self.serviceModel = QtGui.QStandardItemModel(self)
         self.filterProxy = ServicesFilterProxy(self)
         self.filterProxy.setSourceModel(self.serviceModel)
         self.tableViewServices.setModel(self.filterProxy)
+        
+        # Connect selection changed signal
         self.tableViewServices.selectionModel().selectionChanged.connect(self.onServiceSelectionChanged)
         
-        # Log completion
         logger.debug("Table models initialized")
 
     def set_bold_font_family(self, font_family):
-        print(f"Setting bold font family to: {font_family}")
+        """
+        Set the bold font family for tables and apply styling.
+        This is the single source of truth for table font configuration.
+        
+        Args:
+            font_family: Font family name to use for bold text in tables
+        """
+        logger.debug(f"Setting bold font family to: {font_family}")
         self.bold_font_family = font_family
-        if self.bold_font_family:
-            table_style = f"""
-                QTableView, QTableWidget {{
-                    background-color: #eeeeee;
-                    alternate-background-color: #dddddd;
-                    color: black;
-                    font-family: "{self.bold_font_family}";
-                    font-weight: bold;
-                }}
-                QTableView::item:selected, QTableWidget::item:selected {{
-                    background-color: #a1aaff;
-                    color: black;
-                }}
-            """
-            print("Applying table style with bold font")
-            # Remove this line to avoid affecting the entire window:
-            # self.setStyleSheet(table_style)
-            self.tableWidgetServiceDetails.setStyleSheet(table_style)
-            self.tableViewServices.setStyleSheet(table_style)
-            
-            # Force update of table fonts
-            self.tableViewServices.setFont(QtGui.QFont(self.bold_font_family, 10, QtGui.QFont.Weight.Bold))
-            self.tableWidgetServiceDetails.setFont(QtGui.QFont(self.bold_font_family, 10, QtGui.QFont.Weight.Bold))
+        
+        if not self.bold_font_family:
+            logger.warning("Bold font family is None or empty")
+            return
+        
+        # Apply font styling via stylesheet and direct font setting
+        self._apply_table_styling()
+    
+    def _apply_table_styling(self):
+        """
+        Apply consistent styling to all tables.
+        Internal method called by set_bold_font_family.
+        """
+        if not self.bold_font_family:
+            return
+        
+        # Check if table widgets exist (might not during early init)
+        if not hasattr(self, 'tableViewServices') or not hasattr(self, 'tableWidgetServiceDetails'):
+            logger.warning("Table widgets not yet initialized")
+            return
+        
+        # Create stylesheet with font family
+        table_style = f"""
+            QTableView, QTableWidget {{
+                background-color: #eeeeee;
+                alternate-background-color: #dddddd;
+                color: black;
+                font-family: "{self.bold_font_family}";
+                font-weight: bold;
+            }}
+            QTableView::item:selected, QTableWidget::item:selected {{
+                background-color: #a1aaff;
+                color: black;
+            }}
+        """
+        
+        # Apply stylesheet to both tables
+        self.tableWidgetServiceDetails.setStyleSheet(table_style)
+        self.tableViewServices.setStyleSheet(table_style)
+        
+        # Also set font directly for better consistency
+        bold_font = QtGui.QFont(self.bold_font_family, 10, QtGui.QFont.Weight.Bold)
+        self.tableViewServices.setFont(bold_font)
+        self.tableWidgetServiceDetails.setFont(bold_font)
+        
+        logger.debug("Table styling applied successfully")
 
     def setSplitterPlacement(self):
         splitter = self.findChild(QtWidgets.QSplitter, "splitterCentral")
@@ -844,8 +953,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 elif self.server_url.startswith("http://"):
                     self.frameConnectionIndicator.setStyleSheet("background-color: red;")
                     self.labelConnectionStatusText.setText("Connected (HTTP, not secure)")
-                else: # Added this for completeness
-                    self.frameConnectionIndicator.setStyleSheet("background-color: green;")
+                else:
+                    # This should never happen, but log if it does
+                    logger.error(f"Unexpected protocol in server URL: {self.server_url}")
+                    self.frameConnectionIndicator.setStyleSheet("background-color: grey;")
                     self.labelConnectionStatusText.setText("Connected (Unknown Protocol)")
             else:  # Handle case where server_url is not set, but connected is True
                 self.frameConnectionIndicator.setStyleSheet("background-color: yellow;")  # Distinct color
@@ -947,8 +1058,8 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self.stopLoadingAnimation()
             self.statusMsgLabel.setText("Services refreshed")
-            await asyncio.sleep(3)
-            self.statusMsgLabel.setText("")
+            # Clear status message quickly
+            schedule_ui_task(lambda: self.statusMsgLabel.setText(""), 1500)
 
     async def _fetchServicesData(self) -> dict:
         future_normal = self._run_api_call(self.client.retrieve_services)
@@ -1073,14 +1184,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.filterProxy.setSourceModel(new_model)
         self.serviceModel = new_model
 
-        self._rebuildProfileCheckboxes(used_profile_ids)
+        # Only rebuild profile checkboxes if profiles changed
+        if self.last_profile_ids != used_profile_ids:
+            self._rebuildProfileCheckboxes(used_profile_ids)
+            self.last_profile_ids = used_profile_ids
+        
         self._setTableViewColumnWidths()
         
         # Update the total services count
         total_services = len([svc for svc in merged.values() if svc.get("type", "") != "group"])
         self.labelServiceCount.setText(f"Total services: {total_services}")
-
-        self.update_table_fonts()
 
     def onServicesError(self, error_msg):
         QtWidgets.QMessageBox.critical(self, "Error Refreshing Services", error_msg)
@@ -1188,15 +1301,30 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Session Check Failed", str(e))
 
     def _rebuildProfileCheckboxes(self, used_profile_ids):
+        """Rebuild the profile filter checkboxes from the given profile IDs."""
+        # Clear existing checkboxes with proper cleanup
         while self.layoutProfiles.count() > 0:
             item = self.layoutProfiles.takeAt(0)
             w = item.widget()
             if w:
+                # Disconnect signals to prevent issues during deletion
+                try:
+                    w.stateChanged.disconnect()
+                except (TypeError, RuntimeError):
+                    # Signal might not be connected or widget already deleted
+                    pass
+                # Unparent widget immediately for faster cleanup
+                w.setParent(None)
+                # Schedule deletion
                 w.deleteLater()
+        
         self.profileCheckBoxes.clear()
-
-        sorted_pids = sorted(used_profile_ids, 
-                        key=lambda pid: self.service_manager.profile_mapping.get(pid, pid).lower())
+        
+        # Build new checkboxes
+        sorted_pids = sorted(
+            used_profile_ids, 
+            key=lambda pid: self.service_manager.profile_mapping.get(pid, pid).lower()
+        )
         for pid in sorted_pids:
             pname = self.service_manager.profile_mapping.get(pid, pid)
             cb = QtWidgets.QCheckBox(pname, self.scrollAreaWidgetProfilesFilters)
@@ -1205,14 +1333,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.profileCheckBoxes.append((cb, pname))
 
     def onSourceFilterChanged(self, text: str):
-        self.filterProxy.setSourceFilterText(text)
-        schedule_ui_task(self.updateServiceSelection)
+        if self.filterProxy:
+            self.filterProxy.setSourceFilterText(text)
+            schedule_ui_task(self.updateServiceSelection)
 
     def onDestinationFilterChanged(self, text: str):
-        self.filterProxy.setDestinationFilterText(text)
-        schedule_ui_task(self.updateServiceSelection)
+        if self.filterProxy:
+            self.filterProxy.setDestinationFilterText(text)
+            schedule_ui_task(self.updateServiceSelection)
 
     def onTimeFilterChanged(self):
+        if not self.filterProxy:
+            return
+        
         if self.checkBoxEnableTimeFilter.isChecked():
             start_dt = self.dateTimeEditStart.dateTime()
             end_dt = self.dateTimeEditEnd.dateTime()
@@ -1227,6 +1360,9 @@ class MainWindow(QtWidgets.QMainWindow):
         schedule_ui_task(self.updateServiceSelection)
 
     def onProfilesFilterChanged(self):
+        if not self.filterProxy:
+            return
+        
         chosen = []
         for cb, pname in self.profileCheckBoxes:
             if cb.isChecked():

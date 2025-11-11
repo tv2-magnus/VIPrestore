@@ -425,13 +425,21 @@ class ServiceManager:
             if not service_data:
                 raise ServiceManagerError(f"Service {service_id} not found")
             
-            booking_data = service_data.get("booking")
-            if not booking_data:
-                raise ServiceManagerError(f"Could not find booking data for service {service_id}")
+            # Get revision - check both locations for compatibility
+            booking_data = service_data.get("booking", {})
+            res_data = service_data.get("res", {})
             
-            revision = booking_data.get("rev")
+            # Modern services have rev in booking, group services have it in res
+            revision = booking_data.get("rev") or res_data.get("rev")
+            
             if revision is None:
-                raise ServiceManagerError(f"Could not retrieve revision for service {service_id}")
+                # Log the structure for debugging
+                logger.error(f"Service structure: booking keys={list(booking_data.keys())}, "
+                            f"res keys={list(res_data.keys())}")
+                raise ServiceManagerError(
+                    f"Could not retrieve revision for service {service_id}. "
+                    f"This service may not support cancellation."
+                )
             
             entries.append({"id": service_id, "rev": revision})
         
